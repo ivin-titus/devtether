@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/ivin-titus/portless/internal/daemon"
+	"github.com/ivin-titus/devtether/internal/daemon"
 	"github.com/spf13/cobra"
 )
 

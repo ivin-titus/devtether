@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-// Supervisor controls the lifecycle of child processes routed by Portless
+// Supervisor controls the lifecycle of child processes routed by DevTether
 type Supervisor struct {
 	processes map[string]*exec.Cmd
 	mu        sync.Mutex
@@ -25,7 +25,7 @@ func NewSupervisor() *Supervisor {
 }
 
 // StartService springs a new command into a background process, injecting the $PORT variable into its OS environment.
-// It intercepts stdout and stderr, prefixing the logs cleanly before sending them to the Portless stdout.
+// It intercepts stdout and stderr, prefixing the logs cleanly before sending them to the DevTether stdout.
 func (s *Supervisor) StartService(name, command string, assignedPort int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -62,7 +62,7 @@ func (s *Supervisor) StartService(name, command string, assignedPort int) error 
 	go streamLog(stderr, appLogPrefix)
 
 	s.processes[name] = cmd
-	
+
 	log.Printf("[Supervisor] Started '%s' on port %d (PID: %d)", name, assignedPort, cmd.Process.Pid)
 
 	// Await completion in background to clean up state if process crashes
@@ -73,7 +73,7 @@ func (s *Supervisor) StartService(name, command string, assignedPort int) error 
 		} else {
 			log.Printf("[Supervisor] Service '%s' exited cleanly", n)
 		}
-		
+
 		s.mu.Lock()
 		delete(s.processes, n)
 		s.mu.Unlock()

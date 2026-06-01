@@ -6,7 +6,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/ivin-titus/portless/internal/daemon"
+	"github.com/ivin-titus/devtether/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -32,11 +32,11 @@ var listCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "DOMAIN\tSERVICE\tPORT")
 		fmt.Fprintln(w, "------\t-------\t----")
-		
+
 		for _, svc := range services {
 			fmt.Fprintf(w, "%s\t%s\t%d\n", svc.Domain, svc.ServiceName, svc.Port)
 		}
-		
+
 		w.Flush()
 	},
 }

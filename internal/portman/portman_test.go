@@ -72,7 +72,7 @@ func TestConcurrentAllocation(t *testing.T) {
 			t.Errorf("Worker %d returned error: %v", i, errors[i])
 			continue
 		}
-		
+
 		p := ports[i]
 		if seen[p] {
 			t.Errorf("Duplicate port assigned concurrently: %d", p)

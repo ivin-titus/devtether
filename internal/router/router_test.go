@@ -69,6 +69,6 @@ func TestRoutingEngine_Concurrency(t *testing.T) {
 
 	<-done
 	<-done
-	
+
 	// If it didn't panic with concurrent map writes, test passed.
 }

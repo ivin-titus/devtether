@@ -7,13 +7,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ivin-titus/portless/internal/config"
-	"github.com/ivin-titus/portless/internal/daemon"
-	"github.com/ivin-titus/portless/internal/dns"
-	"github.com/ivin-titus/portless/internal/portman"
-	"github.com/ivin-titus/portless/internal/process"
-	"github.com/ivin-titus/portless/internal/proxy"
-	"github.com/ivin-titus/portless/internal/router"
+	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/daemon"
+	"github.com/ivin-titus/devtether/internal/dns"
+	"github.com/ivin-titus/devtether/internal/portman"
+	"github.com/ivin-titus/devtether/internal/process"
+	"github.com/ivin-titus/devtether/internal/proxy"
+	"github.com/ivin-titus/devtether/internal/router"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -24,12 +24,12 @@ func init() {
 
 var startCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Start the Portless Dev Router daemon and proxy",
+	Short: "Start the DevTether daemon and proxy",
 	Long:  `Starts the daemon which initializes the DNS resolver, Reverse Proxy, Process Supervisor, and IPC API.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		log.Println("Starting Portless Dev Router...")
+		log.Println("Starting DevTether...")
 
-		cfg, err := config.LoadConfig("portless.yaml")
+		cfg, err := config.LoadConfig("devtether.yaml")
 		if err != nil && !os.IsNotExist(err) {
 			log.Fatalf("Error loading config: %v", err)
 		}
@@ -39,13 +39,13 @@ var startCmd = &cobra.Command{
 		sup := process.NewSupervisor()
 
 		if cfg != nil {
-			log.Printf("Loaded %d services from portless.yaml\n", len(cfg.Services))
+			log.Printf("Loaded %d services from devtether.yaml\n", len(cfg.Services))
 			for name, svc := range cfg.Services {
 				port, err := pm.GetFreePort()
 				if err != nil {
 					log.Fatalf("Failed to allocate port for %s: %v", name, err)
 				}
-				
+
 				if err := engine.AddRoute(svc.Domain, name, port); err != nil {
 					log.Fatalf("Failed to register route for %s: %v", name, err)
 				}
@@ -55,7 +55,7 @@ var startCmd = &cobra.Command{
 				}
 			}
 		} else {
-			log.Println("No portless.yaml found. Starting empty router (use 'portless add' to attach services).")
+			log.Println("No devtether.yaml found. Starting empty router (use 'devtether add' to attach services).")
 		}
 
 		dnsServer := dns.NewServer()
@@ -69,7 +69,7 @@ var startCmd = &cobra.Command{
 		g.Go(func() error {
 			return dnsServer.Start()
 		})
-		
+
 		// 2. Start IPC API
 		g.Go(func() error {
 			return ipcDaemon.Start()
@@ -97,7 +97,7 @@ var startCmd = &cobra.Command{
 		})
 
 		if err := g.Wait(); err != nil && err != context.Canceled {
-			log.Fatalf("Fatal error running Portless: %v", err)
+			log.Fatalf("Fatal error running DevTether: %v", err)
 		}
 	},
 }

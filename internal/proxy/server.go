@@ -13,7 +13,7 @@ import (
 // Start binds the proxy server to port 80, or falls back to port 8080 if permissions evaluate to denied.
 func (s *Server) Start() error {
 	addr := ":80"
-	
+
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		// Detect if this is a permission error indicating lack of root/setcap
@@ -30,7 +30,7 @@ func (s *Server) Start() error {
 	}
 
 	log.Printf("[Proxy] HTTP Reverse Proxy listening on %s\n", addr)
-	
+
 	return http.Serve(listener, s)
 }
 

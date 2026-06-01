@@ -8,12 +8,12 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "portless",
-	Short: "Portless Dev Router - A lightweight local service router",
-	Long: `Portless is a developer tool that eliminates port conflicts 
-by allowing you to hit clean internal domains (*.internal) instead of localhost:PORT.
+	Use:   "devtether",
+	Short: "DevTether - The local development networking toolkit",
+	Long: `DevTether is a modular developer networking toolkit that replaces port memorization,
+reverse proxy configs, and ngrok subscriptions with clean named domains.
 
-Documentation is available at https://github.com/ivin-titus/portless`,
+Documentation is available at https://github.com/ivin-titus/devtether`,
 	Run: func(cmd *cobra.Command, args []string) {
 		cmd.Help()
 	},

@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// Manager tracks allocated ports to prevent overlap within Portless
+// Manager tracks allocated ports to prevent overlap within DevTether
 type Manager struct {
 	allocated map[int]bool
 	mu        sync.Mutex

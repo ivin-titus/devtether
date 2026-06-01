@@ -31,7 +31,7 @@ func (s *Server) Start() error {
 	log.Printf("[DNS] Local DNS Resolver listening on %s\n", s.server.Addr)
 	if err := s.server.ListenAndServe(); err != nil {
 		log.Printf("[DNS] Permission denied on 0.0.0.0:53 (or port in use). Falling back to 127.0.0.1:53")
-		
+
 		// Recreate server struct as miekg/dns servers cannot be reused after failing to listen
 		s.server = &dns.Server{
 			Addr: "127.0.0.1:53",

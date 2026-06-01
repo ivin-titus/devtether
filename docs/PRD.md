@@ -1,557 +1,252 @@
-# PRD — Portless Dev Router
+# PRD — Portless: The Local Development Networking Protocol
 
-*A lightweight local service router with automatic port management and clean internal domains.*
+> *Version 2.0 — Revised 2026-05-30*
+>
+> *"The missing networking layer for local development."*
+
+---
 
 ## 1. Overview
 
-**Portless Dev Router** is a lightweight developer tool that removes the need to remember or manage ports when running local services.
+**Portless** is a modular, self-hosted developer networking toolkit that replaces the fragmented mess of port memorization, reverse proxy configs, ngrok subscriptions, and ad-hoc LAN sharing scripts with a single, lightweight Go binary.
 
-Instead of accessing services via ports:
+Where Docker networking solves container-to-container communication, Portless solves **developer-to-developer** and **developer-to-service** communication on bare metal. It is the networking layer that should have existed between `localhost` and production.
 
-```text
-localhost:8000
-localhost:3000
-localhost:5173
-```
-
-Developers can use clean internal domains:
-
-```text
-yuki.backend.internal
-horiz.internal
-api.internal
-grafana.internal
-```
-
-The tool automatically:
-
-* assigns free ports
-* routes traffic
-* resolves domains locally
-* prevents port conflicts
-
-All services become accessible via **clean URLs without ports**.
-
-The tool runs as a **single lightweight Go binary**.
+Portless is built around **4 independent engines** that coexist inside one binary. Developers opt-in to the engines they need — they never pay cognitive load for features they don't use.
 
 ---
 
-# 2. Goals
+## 2. Goals
 
 ### Primary Goals
 
-1. Eliminate port conflicts during local development.
-2. Replace `localhost:PORT` with clean internal domains.
-3. Provide automatic port allocation.
-4. Require minimal configuration.
-5. Maintain extremely low resource usage.
+1. **Eliminate port memorization** — Replace `localhost:PORT` with clean named domains (e.g., `portfolio.localhost`).
+2. **Zero-config static routing** — Map existing services running on fixed ports to named domains with one command.
+3. **Optional process orchestration** — For microservice-heavy setups, auto-allocate ports and manage process lifecycles.
+4. **Self-hosted environment sharing** — Enable LAN sharing (same WiFi/VPN) and WAN tunneling (self-hosted relay) without third-party SaaS.
+5. **Access control** — Provide token-based RBAC so developers can control who accesses which services.
+6. **Security by default** — Every feature that expands the attack surface requires explicit opt-in.
 
 ### Non-Goals
 
-The tool is NOT intended to:
-
-* replace Kubernetes
-* manage production infrastructure
-* run heavy container orchestration
-* replace full reverse proxies in production
-
-This tool focuses on **local development environments**.
+- Replace Kubernetes or Docker Compose for production orchestration.
+- Act as a production reverse proxy (Nginx, Caddy, Traefik).
+- Provide full identity management or SSO (future evolution, not MVP).
+- Manage containers or VMs.
 
 ---
 
-# 3. Target Users
+## 3. Target Users
 
-Primary users:
+### Primary
 
-* Backend developers
-* Full-stack developers
-* DevOps engineers
-* Open-source contributors
-* Students building multi-service apps
+- **Solo developers** running 2–5 local services who are tired of port numbers.
+- **Small team leads** at startups who want teammates to access their local backend without Ngrok.
+- **DevOps engineers** looking for a lightweight, self-hosted alternative to tunnel SaaS.
 
-Typical users running services like:
+### Secondary
 
-* FastAPI
-* Node.js
-* Next.js
-* Django
-* Go APIs
-* Docker containers
+- **Open-source contributors** who need a fast way to spin up multi-service dev environments.
+- **Students** building microservice projects who want portfolio-worthy infrastructure.
+- **Enterprise dev teams** (mid-scale) who need access-controlled environment sharing on corporate VPNs.
+
+### Typical Stacks
+
+- Next.js, Vite, Nuxt, Astro (frontend)
+- FastAPI, Django, Express, Go APIs (backend)
+- PostgreSQL, Redis, Elasticsearch (databases — static port routing)
 
 ---
 
-# 4. Core Problem
+## 4. Core Problem
 
-Local development environments frequently suffer from:
-
-* port conflicts
-* difficulty remembering ports
-* messy URLs
-* manual configuration
-
-Example problem:
+### The Port Problem
 
 ```text
-frontend → localhost:3000
-backend → localhost:8000
-admin → localhost:8080
-grafana → localhost:3001
+frontend   → localhost:3000
+backend    → localhost:8000
+admin      → localhost:8080
+grafana    → localhost:3001
+job-flow   → localhost:3223
+api        → localhost:8042
 ```
 
-Developers must constantly remember these mappings.
+Developers must constantly remember these mappings. Port conflicts (`EADDRINUSE`) derail flow state. Sharing with teammates requires Ngrok subscriptions or manual IP+port sharing.
 
-The goal is to transform this into:
+### The Solution
 
 ```text
-frontend.dev.local
-backend.dev.local
-admin.dev.local
-grafana.dev.local
+frontend   → portfolio.localhost
+backend    → api.localhost
+admin      → admin.localhost
+grafana    → grafana.localhost
+job-flow   → job-flow.localhost
+api        → api.job-flow.localhost
 ```
 
-supports internal domains like
-```
-*.internal
-*.local
-*.pc
-*.{suggest more ones; people can even configure own ones}
-```
+One YAML file. One binary. One command: `devtether up`.
 
 ---
 
-# 5. Key Features
+## 5. The 4 Engines
 
-## 5.1 Automatic Port Allocation
+### Engine 1: Static Routing (`devtether route`)
 
-When a service starts, the system assigns an available port.
-
-Example range:
-
-```
-40000–50000
-```
-
-Algorithm:
-
-1. Scan port range
-2. Identify unused port
-3. Assign port
-4. Register mapping
-
-Example:
-
-```
-service: yuki-backend
-assigned_port: 40123
-```
-
-Port conflicts are automatically prevented.
-
----
-
-## 5.2 Domain-Based Routing
-
-The router listens on:
-
-```
-80
-443 (optional)
-```
-
-Incoming requests are routed based on **hostname**.
-
-Example routing table:
-
-```
-yuki.backend.internal → localhost:40123
-horiz.internal → localhost:40124
-grafana.internal → localhost:40125
-```
-
-Routing logic:
-
-```
-request.host → lookup target → proxy request
-```
-
----
-
-## 5.3 Local DNS Resolution
-
-The system resolves wildcard domains locally.
-
-Example rule:
-
-```
-*.internal → 127.0.0.1
-```
-
-Supported domains:
-
-```
-*.internal
-*.dev.local
-*.local.dev
-```
-
-This allows any service name to resolve automatically.
-
----
-
-## 5.4 YAML Configuration
-
-Services can be declared using YAML.
-
-Example:
+**The zero-friction entry point.** Maps pre-existing services on fixed ports to named domains. No process management, no port injection. Portless just handles DNS + proxy.
 
 ```yaml
-services:
-  yuki-backend:
-    domain: yuki.backend.internal
-    command: uvicorn main:app
-
-  horiz-frontend:
-    domain: horiz.internal
-    command: npm run dev
+routes:
+  portfolio.localhost: 3222
+  job-flow.localhost: 3223
+  api.job-flow.localhost: 8042
 ```
 
-Running:
+**Key differentiator vs. Vercel Portless:** Vercel's tool *cannot* route to pre-existing ports. It forces all apps through its process wrapper. Our static routing respects existing workflows.
 
+### Engine 2: Process Orchestration (`devtether orchestrate`)
+
+**The Vercel Portless competitor.** Spawns processes, injects dynamic `$PORT`, manages process trees with `Setpgid`, captures logs with service-name prefixes.
+
+```yaml
+orchestrate:
+  api:
+    domain: api.localhost
+    command: uvicorn main:app --port $PORT
+    cwd: ./services/api
 ```
-devrouter start
-```
 
-Will:
+**Coexistence:** Static routes and orchestrated services share the same DNS + Proxy engines and can coexist in one `devtether.yaml`.
 
-1. start services
-2. assign ports
-3. register routing
-4. enable DNS
+### Engine 3: Tunneling (`devtether tunnel`)
+
+**The self-hosted Ngrok alternative.** Two modes:
+
+- **LAN Mode:** Binds to `0.0.0.0`, broadcasts via mDNS. Any device on the same WiFi/VPN can access services.
+- **WAN Mode:** Connects to a self-hosted `devtether-relay` on a VPS. Exposes local services at `https://app.dev.yourcompany.com` with auto-provisioned Let's Encrypt certificates.
+
+**Truly self-hosted.** Zero SaaS dependency. You own the domain, server, and certificates.
+
+### Engine 4: Access Control (RBAC)
+
+**The enterprise signal.** Token-based access control at the proxy layer.
+
+- Generate scoped tokens: `devtether access grant --name "frontend-team" --services "api.*" --expires 7d`
+- Tokens are HMAC-SHA256 signed JWTs validated before forwarding.
+- WAN tunnels force RBAC on by default — no opt-out.
+- Future: SSO integration, policy-as-code.
 
 ---
 
-## 5.5 CLI Interface
+## 6. Competitive Landscape
 
-Example commands:
+| Tool | What it does | Gap we fill |
+|------|-------------|-------------|
+| **Vercel Portless** | Named `.localhost`, dynamic ports, monorepo support | No static routing. No tunneling. No RBAC. Node.js only. |
+| **frp** | TCP/UDP reverse proxy and tunneling | Complex config. Not dev-focused. No DNS. |
+| **Ngrok** | Instant public tunnels | SaaS with strict limits. Not self-hosted. |
+| **Caddy / Nginx** | Production reverse proxying | Manual config. No DNS. No process awareness. |
+| **Cloudflare Tunnel** | Secure outbound tunneling + Zero Trust | Vendor lock-in. Complex ACL setup. |
 
-Start router
-
-```
-devrouter start
-```
-
-Add service
-
-```
-devrouter add yuki.backend.internal 8000
-```
-
-List services
-
-```
-devrouter list
-```
-
-Remove service
-
-```
-devrouter remove yuki.backend.internal
-```
+**Our unique position:** No single tool combines local DNS + reverse proxy + process orchestration + self-hosted tunneling + RBAC into one developer-first binary.
 
 ---
 
-## 5.6 Automatic Service Discovery (Future Feature)
+## 7. Technology Stack
 
-Detect common dev servers automatically.
+**Language:** Go
 
-Examples:
+**Rationale:**
+- Single static binary — zero runtime dependencies (no Node.js, no Python)
+- Excellent networking primitives (`net/http`, `net`, `crypto/tls`)
+- Native concurrency (`goroutines`, `errgroup`)
+- Cross-compilation for Linux, macOS, Windows
 
-* FastAPI
-* Vite
-* Next.js
-* Node.js
-* Docker containers
+**Key Dependencies:**
 
-Example detection:
-
-```
-Detected service:
-uvicorn running on port 8000
-```
-
-Auto-map:
-
-```
-api.dev.local → localhost:8000
-```
+| Package | Purpose |
+|---------|---------|
+| `miekg/dns` | Embedded DNS resolver |
+| `spf13/cobra` | CLI framework |
+| `gopkg.in/yaml.v3` | YAML config parsing |
+| `golang.org/x/sync/errgroup` | Concurrent server lifecycle |
+| `gorilla/websocket` | Tunnel WebSocket transport (Phase 4) |
+| `golang.org/x/crypto/acme` | Let's Encrypt on relay (Phase 4) |
 
 ---
 
-## 5.7 Local Network Access
+## 8. Performance Targets
 
-Allow services to be accessible from devices in the same network.
-
-Example:
-
-Instead of:
-
-```
-192.168.1.10:3000
-```
-
-Users access:
-
-```
-horiz.internal
-```
-
-LAN DNS resolution supported.
+| Metric | Target |
+|--------|--------|
+| Memory | < 15 MB idle, < 50 MB under load |
+| CPU | Near idle (event-driven, not polling) |
+| Binary size | < 20 MB |
+| Proxy latency | < 1ms added per request |
+| DNS response | < 0.5ms for cached queries |
 
 ---
 
-# 6. Architecture
+## 9. Security Model
 
-High-level architecture:
+**Guiding principle:** Secure by default, permissive by opt-in.
 
-```
-           Browser
-              │
-              ▼
-        Local DNS Resolver
-              │
-              ▼
-        Reverse Proxy Router
-              │
-              ▼
-          Service Ports
-```
+See [ADR-003: Security Model](adr/003-security-model.md) for the complete threat model covering 6 attack surfaces:
 
-Components:
-
-```
-CLI
-Config Loader
-Port Manager
-Routing Engine
-DNS Resolver
-Reverse Proxy
-```
+1. IPC Socket — `0600` permissions, XDG_RUNTIME_DIR, session nonce auth
+2. DNS Engine — Loopback-only by default, strict TLD filtering, no upstream forwarding
+3. Reverse Proxy — Host validation, loopback-only targets, connection timeouts, header sanitization
+4. Process Orchestrator — YAML-only commands, selective env passing, `no_new_privs`
+5. WAN Tunnel — mTLS, scoped registration tokens, RBAC forced-on
+6. Configuration — Env var interpolation, secret pattern warnings, file permission checks
 
 ---
 
-# 7. System Components
+## 10. Success Metrics
 
-## 7.1 Port Manager
-
-Responsible for:
-
-* detecting used ports
-* assigning free ports
-* preventing conflicts
-
-Example internal map:
-
-```
-service → port
-```
+| Metric | Target |
+|--------|--------|
+| GitHub stars (6 months) | 500+ |
+| Setup time for new user | < 2 minutes |
+| Zero-config static routing | Works on first try |
+| Graceful shutdown | < 2 seconds, zero orphan processes |
+| Security audit | Zero critical vulnerabilities in default config |
 
 ---
 
-## 7.2 Router
+## 11. Implementation Phases
 
-Handles HTTP requests.
+| Phase | Name | Deliverable |
+|-------|------|-------------|
+| 1 | Foundation | Static routing, DNS, proxy with graceful shutdown |
+| 2 | Orchestration | Process supervisor, dynamic port injection |
+| 3 | LAN Sharing | mDNS broadcasting, `0.0.0.0` binding |
+| 4 | WAN Tunneling | Self-hosted relay, WebSocket tunnels |
+| 5 | Access Control | Token-based RBAC |
+| 6 | Polish & Community | Docs, CI/CD, goreleaser, community outreach |
 
-Responsibilities:
-
-* inspect Host header
-* map domain → port
-* proxy request
-
-Uses Go HTTP reverse proxy.
-
----
-
-## 7.3 DNS Resolver
-
-Resolves wildcard domain to localhost.
-
-Example:
-
-```
-*.internal → 127.0.0.1
-```
-
-Possible implementation:
-
-* lightweight DNS server
-* OS hosts file management
+See the [Master Plan](../devtether_master_plan.md) for detailed task breakdowns per phase.
 
 ---
 
-## 7.4 Config Manager
+## 12. Project Status
 
-Loads YAML configuration.
+| Component | Status |
+|-----------|--------|
+| DNS Engine | ⚠️ Functional, needs security hardening (binds 0.0.0.0) |
+| Reverse Proxy | ⚠️ Functional, needs graceful shutdown + timeouts |
+| Routing Engine | ✅ Working, thread-safe |
+| Process Supervisor | ⚠️ Functional, has race conditions + zombie risk |
+| Port Manager | ⚠️ Functional, has TOCTOU race |
+| IPC Daemon | ⚠️ Functional, critical socket permission vulnerability |
+| Config Loader | ✅ Working |
+| CLI (Cobra) | ⚠️ Working, needs restructuring for new command tree |
+| Static Routing | 🔲 Not yet implemented (Phase 1) |
+| LAN Sharing | 🔲 Not yet implemented (Phase 3) |
+| WAN Tunneling | 🔲 Not yet implemented (Phase 4) |
+| RBAC | 🔲 Not yet implemented (Phase 5) |
 
-Stores service mappings.
-
-Example structure:
-
-```
-domain → service
-service → port
-```
-
----
-
-# 8. Technology Stack
-
-Primary language:
-
-**Go**
-
-Reasons:
-
-* low memory usage
-* fast networking
-* single binary deployment
-* easy concurrency
-
-Suggested Go packages:
-
-```
-net/http
-net/http/httputil
-gopkg.in/yaml.v3
-miekg/dns
-cobra (CLI)
-```
+**Legend:** ✅ Production-ready | ⚠️ Functional with known issues | 🔲 Not started
 
 ---
 
-# 9. Performance Targets
-
-Resource usage target:
-
-| Metric      | Target    |
-| ----------- | --------- |
-| Memory      | <10 MB    |
-| CPU         | near idle |
-| Binary size | <15 MB    |
-
-The router should handle thousands of requests per second locally.
-
----
-
-# 10. Security Considerations
-
-Security scope is limited since the tool runs locally.
-
-However:
-
-* restrict exposed interfaces
-* avoid open DNS abuse
-* prevent external traffic injection
-
-Default DNS binding:
-
-```
-127.0.0.1
-```
-
----
-
-# 11. Future Enhancements
-
-Possible improvements:
-
-### HTTPS support
-
-Automatic TLS using local certificates.
-
-Example:
-
-```
-https://horiz.internal
-```
-
-### Docker integration
-
-Auto-detect containers.
-
-### Service dashboard
-
-Web UI showing running services.
-
-### Hot reload
-
-Reload config without restarting.
-
-### Plugin system
-
-Allow custom routing rules.
-
----
-
-# 12. Success Metrics
-
-Success of the project measured by:
-
-* developer adoption
-* GitHub stars
-* ease of setup
-* reliability
-* performance
-
----
-
-# 13. Example Developer Workflow
-
-Typical usage:
-
-```
-git clone project
-devrouter start
-```
-
-Services become accessible via:
-
-```
-api.internal
-frontend.internal
-grafana.internal
-```
-
-No ports required.
-
----
-
-# 14. Possible Project Names
-
-Potential repository names:
-
-```
-portless ( Agreed )
-devrouter
-localmesh
-devfabric
-portless-dev
-devdns
-```
-
-Example:
-
-```
-github.com/ivin-titus/portless
-```
-
----
-
-✅ This project is **excellent for your GitHub portfolio** because it demonstrates:
-
-* networking knowledge
-* Go backend engineering
-* DevOps tooling
-* CLI development
-* DNS + reverse proxy systems
-
-It’s the kind of project that **stands out compared to typical student repos**.
+*This PRD is a living document. It will be updated as the project evolves through its implementation phases.*

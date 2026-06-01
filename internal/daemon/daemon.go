@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/ivin-titus/portless/internal/portman"
-	"github.com/ivin-titus/portless/internal/process"
-	"github.com/ivin-titus/portless/internal/router"
+	"github.com/ivin-titus/devtether/internal/portman"
+	"github.com/ivin-titus/devtether/internal/process"
+	"github.com/ivin-titus/devtether/internal/router"
 )
 
-const SocketPath = "/tmp/portless.sock"
+const SocketPath = "/tmp/devtether.sock"
 
 // Server runs an HTTP API over a UNIX socket for IPC communication with CLI
 type Server struct {
@@ -105,7 +105,7 @@ func (s *Server) addService(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 	routes := s.router.GetAllRoutes()
-	
+
 	type ServiceResponse struct {
 		Domain      string `json:"domain"`
 		ServiceName string `json:"serviceName"`
@@ -141,6 +141,6 @@ func (s *Server) removeService(w http.ResponseWriter, r *http.Request) {
 		s.pm.ReleasePort(target.Port)
 		s.router.RemoveRoute(domain)
 	}
-	
+
 	w.WriteHeader(http.StatusOK)
 }

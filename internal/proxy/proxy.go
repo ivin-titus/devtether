@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 
-	"github.com/ivin-titus/portless/internal/router"
+	"github.com/ivin-titus/devtether/internal/router"
 )
 
 // Server encapsulates the HTTP Reverse Proxy that drives traffic to targeted internal ports
@@ -27,7 +27,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	target := s.Engine.GetTarget(host)
 	if target == nil {
-		http.Error(w, "Portless: Service not found for domain '"+host+"'", http.StatusNotFound)
+		http.Error(w, "DevTether: Service not found for domain '"+host+"'", http.StatusNotFound)
 		return
 	}
 
@@ -43,7 +43,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
 		log.Printf("[Proxy Error] %s routing to %s: %v", host, target.URL.String(), err)
-		http.Error(w, "Portless: Bad Gateway (Backend service may be down or starting)", http.StatusBadGateway)
+		http.Error(w, "DevTether: Bad Gateway (Backend service may be down or starting)", http.StatusBadGateway)
 	}
 
 	proxy.ServeHTTP(w, r)

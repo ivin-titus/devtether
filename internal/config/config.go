@@ -13,12 +13,12 @@ type ServiceConfig struct {
 	Command string `yaml:"command"`
 }
 
-// Config represents the top-level structure of portless.yaml
+// Config represents the top-level structure of devtether.yaml
 type Config struct {
 	Services map[string]ServiceConfig `yaml:"services"`
 }
 
-// LoadConfig reads a portless.yaml file from disk and parses it into a Config struct
+// LoadConfig reads a devtether.yaml file from disk and parses it into a Config struct
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

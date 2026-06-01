@@ -18,7 +18,7 @@ services:
 `)
 
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "portless.yaml")
+	configPath := filepath.Join(tmpDir, "devtether.yaml")
 	if err := os.WriteFile(configPath, validYAML, 0644); err != nil {
 		t.Fatalf("Failed to write temporary test file: %v", err)
 	}
@@ -55,7 +55,7 @@ services:
 `)
 
 	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "portless.yaml")
+	configPath := filepath.Join(tmpDir, "devtether.yaml")
 	if err := os.WriteFile(configPath, invalidYAML, 0644); err != nil {
 		t.Fatalf("Failed to write temporary test file: %v", err)
 	}

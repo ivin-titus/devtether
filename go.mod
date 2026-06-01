@@ -1,4 +1,4 @@
-module github.com/ivin-titus/portless
+module github.com/ivin-titus/devtether
 
 go 1.25.0
 

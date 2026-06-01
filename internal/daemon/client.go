@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Client is used by the CLI commands to talk to the background Portless daemon
+// Client is used by the CLI commands to talk to the background DevTether daemon
 type Client struct {
 	httpc *http.Client
 }
@@ -37,7 +37,7 @@ func (c *Client) AddService(domain, command string) error {
 
 	resp, err := c.httpc.Post("http://unix/services", "application/json", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return fmt.Errorf("failed to contact portless daemon (is it running?): %w", err)
+		return fmt.Errorf("failed to contact devtether daemon (is it running?): %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -58,7 +58,7 @@ func (c *Client) RemoveService(domain string) error {
 
 	resp, err := c.httpc.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to contact portless daemon: %w", err)
+		return fmt.Errorf("failed to contact devtether daemon: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -81,7 +81,7 @@ type ServiceResponse struct {
 func (c *Client) ListServices() ([]ServiceResponse, error) {
 	resp, err := c.httpc.Get("http://unix/services")
 	if err != nil {
-		return nil, fmt.Errorf("failed to contact portless daemon: %w", err)
+		return nil, fmt.Errorf("failed to contact devtether daemon: %w", err)
 	}
 	defer resp.Body.Close()
 

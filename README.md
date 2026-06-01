@@ -1,14 +1,20 @@
-# Portless
+# DevTether
 
-Portless is a local service router and DNS orchestrator designed for Linux environments. It eliminates port conflicts by dynamically allocating ephemeral ports to child processes and routing HTTP traffic over clean wildcard domains (e.g., `*.localhost`, `*.internal`).
+DevTether is a modular, self-hosted developer networking toolkit for Linux environments. It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean named domains — all from a single Go binary.
 
 ## Architecture Overview
 
-Portless operates simultaneously as a Process Supervisor, a DNS Resolver, and an HTTP Reverse Proxy:
-- **Port Manager**: Binds securely to `:0` to allocate collision-free TCP ports from the host network.
-- **Process Supervisor**: Injects `$PORT` into process execution environments, monitors stdout/stderr with custom prefixes, and uses OS Process Groups (`Setpgid`) to safely SIGTERM entire process trees upon exit.
-- **Local DNS Resolver**: Intercepts UDP/53 queries for defined pseudo-TLDs and resolves them to the host's Local Area Network IP or `127.0.0.1`.
-- **IPC Daemon**: Exposes a Unix Domain Socket (`/tmp/portless.sock`) providing a RESTful API to hot-reload routes and mutate process state without restarting the core router.
+DevTether is built as **4 independent engines** inside a single binary:
+
+- **Engine 1: Static Routing** — Maps pre-existing services on fixed ports to named domains. Zero process management.
+- **Engine 2: Orchestration** — Spawns processes, injects dynamic `$PORT`, manages process trees.
+- **Engine 3: Tunneling** — LAN sharing via mDNS + self-hosted WAN tunneling via relay.
+- **Engine 4: Access Control** — Token-based RBAC at the proxy layer.
+
+Shared infrastructure:
+- **DNS Engine**: Intercepts UDP/53 queries for configured TLDs and resolves them locally.
+- **Reverse Proxy**: Routes HTTP traffic based on `Host` header to the correct backend.
+- **IPC Daemon**: Unix Domain Socket API for hot-reloading routes without restart.
 
 *For a detailed sequence diagram, see the [Architecture Docs](docs/architecture.md).*
 
@@ -21,70 +27,82 @@ Portless operates simultaneously as a Process Supervisor, a DNS Resolver, and an
 Build the project and make it executable globally:
 
 ```bash
-git clone https://github.com/ivin-titus/portless.git
-cd portless
-go build -o portless ./cmd/portless
-sudo mv portless /usr/local/bin/
+git clone https://github.com/ivin-titus/devtether.git
+cd devtether
+go build -o devtether ./cmd/devtether
+sudo mv devtether /usr/local/bin/
 ```
 
 ### Network Capabilities (`setcap`)
 
-Portless requires elevated permissions to bind to Port 80 and Port 53. To avoid running the daemon as root, explicitly grant the binary `cap_net_bind_service`:
+DevTether requires elevated permissions to bind to Port 80 and Port 53. To avoid running the daemon as root, explicitly grant the binary `cap_net_bind_service`:
 
 ```bash
-sudo setcap cap_net_bind_service=+ep /usr/local/bin/portless
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/devtether
 ```
-> If capabilities are not assigned, Portless will gracefully fall back to binding on Port `8080`.
+> If capabilities are not assigned, DevTether will gracefully fall back to binding on Port `8080`.
 
 ### DNS Configuration
 
-To unconditionally route `*.localhost` or `*.internal` to Portless, configure your system's resolver (e.g., `systemd-resolved`):
+To unconditionally route `*.localhost` or `*.internal` to DevTether, configure your system's resolver (e.g., `systemd-resolved`):
 
 ```bash
 sudo mkdir -p /etc/systemd/resolved.conf.d/
-echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~internal ~localhost" | sudo tee /etc/systemd/resolved.conf.d/portless.conf
+echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~internal ~localhost" | sudo tee /etc/systemd/resolved.conf.d/devtether.conf
 sudo systemctl restart systemd-resolved
 ```
 
 ## Usage
 
-### 1. Configuration (`portless.yaml`)
+### 1. Static Routing (`devtether.yaml`)
 
-Define routing rules and executing commands in the root of your project:
+Map your already-running services to clean domains:
 
 ```yaml
-services:
-  python-api:
-    domain: api.localhost
-    command: uvicorn main:app
-  
-  frontend:
-    domain: web.localhost
-    command: npm run dev
+routes:
+  portfolio.localhost: 3222
+  job-flow.localhost: 3223
+  api.job-flow.localhost: 8042
 ```
 
-*Note: Ensure your framework respects the `$PORT` environment variable. Portless assigns ports strictly through `$PORT` injection.*
+### 2. Orchestrated Services
 
-### 2. Execution
+Let DevTether manage process lifecycles and port allocation:
 
-Start the core routing daemon:
+```yaml
+orchestrate:
+  api:
+    domain: api.localhost
+    command: uvicorn main:app --port $PORT
+    cwd: ./services/api
+```
+
+### 3. Execution
+
+Start the routing daemon:
 
 ```bash
-portless start
+devtether start
 ```
 
-### 3. IPC Operations
+### 4. IPC Operations
 
 Add, view, or remove services dynamically over the Unix socket via secondary terminal windows:
 
 ```bash
-portless list
-portless add grafana.localhost "npm run start:ui"
-portless remove grafana.localhost
+devtether list
+devtether add grafana.localhost "npm run start:ui"
+devtether remove grafana.localhost
 ```
+
+## Documentation
+
+- [Product Requirements](docs/PRD.md)
+- [Architecture Overview](docs/architecture.md)
+- [Architectural Decision Records](docs/adr/README.md)
 
 ## Contributing
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming conventions, workflow architecture, and testing guidelines. Code behavior policies are found in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
-Portless is licensed under the AGPL-3.0 License. See [LICENSE](LICENSE) for the full text.
+DevTether is licensed under the AGPL-3.0 License. See [LICENSE](LICENSE) for the full text.

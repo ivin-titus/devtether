@@ -1,0 +1,4 @@
+services:
+  portfolio:
+    domain: portfolio.localhost
+    command: cd "/media/ivintitus/Data/My Projects/Main/ivin-lab" && pnpm --filter portfolio exec next dev --turbopack -p $PORT
