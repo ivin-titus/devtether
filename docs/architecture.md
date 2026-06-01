@@ -1,6 +1,8 @@
 # Architecture Overview
 
-> *Version 2.0 — Revised 2026-05-30*
+> *Version 2.0-beta — Revised 2026-05-30*
+> 
+> **Project Status: Beta** — Engine 1 (Static Routing) is fully implemented and its core architecture is stable. Engines 2, 3, and 4 are planned for future phases.
 
 This document provides a deep dive into the architecture of **DevTether**. If you're contributing to or hacking on the codebase, this is the best place to start.
 

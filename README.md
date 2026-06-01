@@ -1,5 +1,9 @@
 # DevTether
 
+> [!WARNING]
+> **Project Status: Beta**
+> DevTether is currently in Beta. Phase 1 (Static Routing) is complete and its configuration schema, CLI API, and core architecture are considered stable. Breaking changes to these will only occur with strong consensus and will be explicitly logged in the CHANGELOG. Note that Engines 2, 3, and 4 are still pending implementation.
+
 DevTether is a modular, self-hosted developer networking toolkit for Linux environments. It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean named domains — all from a single Go binary.
 
 ## Architecture Overview
