@@ -1,8 +1,8 @@
 # Architectural Decision Records (ADR) Index
 
-This directory contains the Architectural Decision Records for the Portless project.
+This directory contains the Architectural Decision Records for the DevTether project.
 
-ADRs document the key technical decisions made during the design and implementation of Portless. They capture the context, decision, and consequences so that future contributors understand *why* things are built the way they are.
+ADRs document the key technical decisions made during the design and implementation of DevTether. They capture the context, decision, and consequences so that future contributors understand *why* things are built the way they are.
 
 ## Index
 

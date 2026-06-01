@@ -40,7 +40,7 @@ DevTether requires elevated permissions to bind to Port 80 and Port 53. To avoid
 ```bash
 sudo setcap cap_net_bind_service=+ep /usr/local/bin/devtether
 ```
-> If capabilities are not assigned, DevTether will gracefully fall back to binding on Port `8080`.
+> If capabilities are not assigned, or if the port is already in use, DevTether will gracefully fall back to port `8080`. If that is also occupied, it will bind to an OS-assigned ephemeral port (Port 0). The same fallback logic applies to the DNS engine (`53` → `5353` → `Non-Fatal`).
 
 ### DNS Configuration
 

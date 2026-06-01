@@ -1,4 +1,5 @@
-services:
-  portfolio:
-    domain: portfolio.localhost
-    command: cd "/media/ivintitus/Data/My Projects/Main/ivin-lab" && pnpm --filter portfolio exec next dev --turbopack -p $PORT
+# DevTether — Local config
+# Map your already-running services to clean domain names.
+
+routes:
+  portfolio.localhost: 3222

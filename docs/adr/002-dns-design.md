@@ -5,17 +5,17 @@
 
 ## Context
 
-Portless embeds a DNS server (`miekg/dns`) to resolve configured TLDs (`.localhost`, `.local`, `.test`) to the developer's machine. This eliminates the need for manual `/etc/hosts` editing.
+DevTether embeds a DNS server (`miekg/dns`) to resolve configured TLDs (`.localhost`, `.local`, `.test`) to the developer's machine. This eliminates the need for manual `/etc/hosts` editing.
 
 However, running a DNS server introduces significant security risks:
 
-1. **Open resolver abuse** — If Portless forwards unmatched queries upstream, it becomes an open DNS resolver that can be exploited for DNS amplification attacks.
-2. **Network exposure** — Binding to `0.0.0.0:53` (the original default) exposes the DNS server to every device on the network, even when the developer only intends to use Portless locally.
+1. **Open resolver abuse** — If DevTether forwards unmatched queries upstream, it becomes an open DNS resolver that can be exploited for DNS amplification attacks.
+2. **Network exposure** — Binding to `0.0.0.0:53` (the original default) exposes the DNS server to every device on the network, even when the developer only intends to use DevTether locally.
 3. **Per-query overhead** — The original implementation called `net.Dial("udp", "8.8.8.8:80")` on every DNS query to determine the local IP, adding unnecessary syscall overhead.
 
 ## Decision
 
-1. **Non-recursive by design** — Portless will **never** forward DNS queries to upstream resolvers. It only answers queries for its own configured TLDs. All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision.
+1. **Non-recursive by design** — DevTether will **never** forward DNS queries to upstream resolvers. It only answers queries for its own configured TLDs. All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision.
 2. **Loopback-only by default** — DNS binds to `127.0.0.1:53` by default. It only binds to `0.0.0.0:53` when `--lan` mode is explicitly enabled.
 3. **Cached LAN IP** — The local IP is resolved once on startup and cached. It is refreshed only on detected network changes (interface up/down events), not per-query.
 

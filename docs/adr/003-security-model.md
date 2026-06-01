@@ -5,7 +5,7 @@
 
 ## Context
 
-Portless is a networking tool that proxies HTTP traffic, optionally executes shell commands, and can expose local services to the internet. This makes it a high-value attack surface. A single vulnerability in default configuration could compromise a developer's machine or expose sensitive development data.
+DevTether is a networking tool that proxies HTTP traffic, optionally executes shell commands, and can expose local services to the internet. This makes it a high-value attack surface. A single vulnerability in default configuration could compromise a developer's machine or expose sensitive development data.
 
 A pre-mortem analysis of the v1.0 codebase identified several critical security issues:
 
@@ -40,7 +40,7 @@ Adopt a **"Secure by Default, Permissive by Opt-in"** security model:
 ### Positive
 
 - Default installations are safe without any security knowledge from the user.
-- Security-conscious teams can adopt Portless with confidence.
+- Security-conscious teams can adopt DevTether with confidence.
 - The explicit opt-in model creates a clear audit trail of what is exposed.
 
 ### Negative

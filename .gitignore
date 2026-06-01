@@ -1,5 +1,5 @@
 # Binaries
-portless
+devtether
 *.test
 
 # Editor/IDE
@@ -8,7 +8,7 @@ portless
 
 # Local configuration & environment
 .env
-portless.yaml
+devtether.yaml
 
 # Sockets and temporary files
 *.sock

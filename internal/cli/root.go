@@ -9,11 +9,15 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "devtether",
-	Short: "DevTether - The local development networking toolkit",
-	Long: `DevTether is a modular developer networking toolkit that replaces port memorization,
-reverse proxy configs, and ngrok subscriptions with clean named domains.
+	Short: "DevTether — the local development networking toolkit",
+	Long: `DevTether is a modular, self-hosted developer networking toolkit that replaces
+port memorization, reverse proxy configs, and ngrok subscriptions with clean
+named domains — all from a single Go binary.
 
-Documentation is available at https://github.com/ivin-titus/devtether`,
+  devtether up        Start the routing daemon
+  devtether routes    Show active routes
+
+Documentation: https://github.com/ivin-titus/devtether`,
 	Run: func(cmd *cobra.Command, args []string) {
 		cmd.Help()
 	},

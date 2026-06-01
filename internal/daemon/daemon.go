@@ -1,146 +1,125 @@
+// Package daemon provides an IPC server that exposes a RESTful API
+// over a Unix domain socket for CLI ↔ daemon communication.
+//
+// Security model (see ADR-003):
+//   - Socket is placed in $XDG_RUNTIME_DIR/devtether/ (per-user, tmpfs-backed).
+//   - Socket permissions are 0600 (owner-only read/write).
+//   - Socket directory permissions are 0700.
+//   - Fallback to /tmp/devtether.sock if XDG_RUNTIME_DIR is not set.
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
-	"github.com/ivin-titus/devtether/internal/portman"
-	"github.com/ivin-titus/devtether/internal/process"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
-const SocketPath = "/tmp/devtether.sock"
+// SocketPath returns the platform-appropriate path for the IPC socket.
+func SocketPath() string {
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return filepath.Join(xdg, "devtether", "devtether.sock")
+	}
+	return "/tmp/devtether.sock"
+}
 
-// Server runs an HTTP API over a UNIX socket for IPC communication with CLI
+// Server runs an HTTP API over a Unix domain socket for IPC communication.
 type Server struct {
-	router *router.Engine
-	pm     *portman.Manager
-	sup    *process.Supervisor
+	engine     *router.Engine
+	httpServer *http.Server
+	socketPath string
 }
 
-// NewServer initializes the IPC Daemon
-func NewServer(r *router.Engine, p *portman.Manager, s *process.Supervisor) *Server {
+// NewServer initializes the IPC daemon.
+func NewServer(engine *router.Engine) *Server {
 	return &Server{
-		router: r,
-		pm:     p,
-		sup:    s,
+		engine:     engine,
+		socketPath: SocketPath(),
 	}
 }
 
-// Start begins listening on the Unix domain socket for CLI commands
-func (s *Server) Start() error {
-	// Clean up dead socket if exists
-	if err := os.RemoveAll(SocketPath); err != nil {
-		return fmt.Errorf("failed to clear old socket: %w", err)
+// Start begins listening on the Unix domain socket. It blocks until the
+// context is cancelled or a fatal error occurs.
+func (s *Server) Start(ctx context.Context) error {
+	// Ensure socket directory exists with restrictive permissions.
+	socketDir := filepath.Dir(s.socketPath)
+	if err := os.MkdirAll(socketDir, 0700); err != nil {
+		return fmt.Errorf("daemon: failed to create socket directory: %w", err)
 	}
 
-	listener, err := net.Listen("unix", SocketPath)
+	// Clean up dead socket from a previous run.
+	if err := os.Remove(s.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("daemon: failed to clear old socket: %w", err)
+	}
+
+	listener, err := net.Listen("unix", s.socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to bind unix socket: %w", err)
+		return fmt.Errorf("daemon: failed to bind unix socket: %w", err)
 	}
 
-	// Make socket accessible to host user
-	if err := os.Chmod(SocketPath, 0777); err != nil {
-		log.Printf("[Daemon] Warning: Failed to chmod socket: %v", err)
+	// Set restrictive permissions: owner-only read/write.
+	if err := os.Chmod(s.socketPath, 0600); err != nil {
+		log.Printf("[daemon] warning: failed to chmod socket: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/services", s.handleServices)
+	mux.HandleFunc("/routes", s.handleRoutes)
 
-	log.Printf("[Daemon] IPC Server listening on %s\n", SocketPath)
-	return http.Serve(listener, mux)
-}
+	s.httpServer = &http.Server{Handler: mux}
 
-func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listServices(w, r)
-	case http.MethodPost:
-		s.addService(w, r)
-	case http.MethodDelete:
-		s.removeService(w, r)
-	default:
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	// Graceful shutdown when context is cancelled.
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		s.httpServer.Shutdown(shutdownCtx)
+		os.Remove(s.socketPath)
+	}()
+
+	log.Printf("[daemon] ipc listening on %s", s.socketPath)
+	if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("daemon: server error: %w", err)
 	}
+	return nil
 }
 
-type AddRequest struct {
-	Domain  string `json:"domain"`
-	Command string `json:"command"`
+// RouteResponse is the JSON representation of a single route.
+type RouteResponse struct {
+	Domain      string `json:"domain"`
+	ServiceName string `json:"serviceName"`
+	Port        int    `json:"port"`
+	Type        string `json:"type"`
 }
 
-func (s *Server) addService(w http.ResponseWriter, r *http.Request) {
-	var req AddRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+// handleRoutes serves the GET /routes endpoint.
+func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	port, err := s.pm.GetFreePort()
-	if err != nil {
-		http.Error(w, "Failed to allocate port", http.StatusInternalServerError)
-		return
-	}
+	routes := s.engine.GetAllRoutes()
+	response := make([]RouteResponse, 0, len(routes))
 
-	if err := s.sup.StartService(req.Domain, req.Command, port); err != nil {
-		s.pm.ReleasePort(port)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if err := s.router.AddRoute(req.Domain, req.Domain, port); err != nil {
-		_ = s.sup.StopService(req.Domain)
-		s.pm.ReleasePort(port)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, "Service %s successfully mapped to %s on port %d", req.Domain, req.Domain, port)
-}
-
-func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
-	routes := s.router.GetAllRoutes()
-
-	type ServiceResponse struct {
-		Domain      string `json:"domain"`
-		ServiceName string `json:"serviceName"`
-		Port        int    `json:"port"`
-	}
-
-	var response []ServiceResponse
 	for domain, target := range routes {
-		response = append(response, ServiceResponse{
+		response = append(response, RouteResponse{
 			Domain:      domain,
 			ServiceName: target.ServiceName,
 			Port:        target.Port,
+			Type:        string(target.Type),
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
-}
-
-func (s *Server) removeService(w http.ResponseWriter, r *http.Request) {
-	domain := r.URL.Query().Get("domain")
-	if domain == "" {
-		http.Error(w, "domain parameter required", http.StatusBadRequest)
-		return
-	}
-
-	target := s.router.GetTarget(domain)
-	if target != nil {
-		_ = s.sup.StopService(target.ServiceName)
-		s.pm.ReleasePort(target.Port)
-		s.router.RemoveRoute(domain)
-	}
-
-	w.WriteHeader(http.StatusOK)
 }

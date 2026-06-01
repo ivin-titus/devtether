@@ -1,0 +1,76 @@
+package cli
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"text/tabwriter"
+
+	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/daemon"
+	"github.com/spf13/cobra"
+)
+
+func init() {
+	rootCmd.AddCommand(routesCmd)
+}
+
+var routesCmd = &cobra.Command{
+	Use:   "routes",
+	Short: "Show all configured or active routes",
+	Long: `If the DevTether daemon is running, fetches live routes from it.
+Otherwise, reads routes directly from devtether.yaml.`,
+	Run: runRoutes,
+}
+
+func runRoutes(cmd *cobra.Command, args []string) {
+	// Try the daemon first.
+	client := daemon.NewClient()
+	routes, err := client.ListRoutes()
+	if err == nil {
+		printRoutes(routes)
+		return
+	}
+
+	// Daemon not running — fall back to reading config file.
+	cfg, err := config.LoadConfig("devtether.yaml")
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No devtether.yaml found and daemon is not running.")
+			return
+		}
+		log.Fatalf("config error: %v", err)
+	}
+
+	if len(cfg.Routes) == 0 {
+		fmt.Println("No routes defined in devtether.yaml.")
+		return
+	}
+
+	// Convert config routes to the same format.
+	var configRoutes []daemon.RouteResponse
+	for domain, port := range cfg.Routes {
+		configRoutes = append(configRoutes, daemon.RouteResponse{
+			Domain:      domain,
+			ServiceName: "static",
+			Port:        port,
+			Type:        "static",
+		})
+	}
+	printRoutes(configRoutes)
+}
+
+func printRoutes(routes []daemon.RouteResponse) {
+	if len(routes) == 0 {
+		fmt.Println("No active routes.")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "DOMAIN\tPORT\tTYPE")
+	fmt.Fprintln(w, "------\t----\t----")
+	for _, r := range routes {
+		fmt.Fprintf(w, "%s\t%d\t%s\n", r.Domain, r.Port, r.Type)
+	}
+	w.Flush()
+}

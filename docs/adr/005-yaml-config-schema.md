@@ -5,7 +5,7 @@
 
 ## Context
 
-Portless supports 4 independent engines, each with different configuration needs. We needed to decide between:
+DevTether supports 4 independent engines, each with different configuration needs. We needed to decide between:
 
 1. **Separate config files per engine** (e.g., `devtether-routes.yaml`, `devtether-orchestrate.yaml`, `devtether-tunnel.yaml`)
 2. **A single unified `devtether.yaml`** with top-level keys for each engine

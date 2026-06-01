@@ -1,4 +1,4 @@
-# PRD — Portless: The Local Development Networking Protocol
+# PRD — DevTether: The Local Development Networking Protocol
 
 > *Version 2.0 — Revised 2026-05-30*
 >
@@ -8,11 +8,11 @@
 
 ## 1. Overview
 
-**Portless** is a modular, self-hosted developer networking toolkit that replaces the fragmented mess of port memorization, reverse proxy configs, ngrok subscriptions, and ad-hoc LAN sharing scripts with a single, lightweight Go binary.
+**DevTether** is a modular, self-hosted developer networking toolkit that replaces the fragmented mess of port memorization, reverse proxy configs, ngrok subscriptions, and ad-hoc LAN sharing scripts with a single, lightweight Go binary.
 
-Where Docker networking solves container-to-container communication, Portless solves **developer-to-developer** and **developer-to-service** communication on bare metal. It is the networking layer that should have existed between `localhost` and production.
+Where Docker networking solves container-to-container communication, DevTether solves **developer-to-developer** and **developer-to-service** communication on bare metal. It is the networking layer that should have existed between `localhost` and production.
 
-Portless is built around **4 independent engines** that coexist inside one binary. Developers opt-in to the engines they need — they never pay cognitive load for features they don't use.
+DevTether is built around **4 independent engines** that coexist inside one binary. Developers opt-in to the engines they need — they never pay cognitive load for features they don't use.
 
 ---
 
@@ -92,7 +92,7 @@ One YAML file. One binary. One command: `devtether up`.
 
 ### Engine 1: Static Routing (`devtether route`)
 
-**The zero-friction entry point.** Maps pre-existing services on fixed ports to named domains. No process management, no port injection. Portless just handles DNS + proxy.
+**The zero-friction entry point.** Maps pre-existing services on fixed ports to named domains. No process management, no port injection. DevTether just handles DNS + proxy.
 
 ```yaml
 routes:
@@ -101,11 +101,11 @@ routes:
   api.job-flow.localhost: 8042
 ```
 
-**Key differentiator vs. Vercel Portless:** Vercel's tool *cannot* route to pre-existing ports. It forces all apps through its process wrapper. Our static routing respects existing workflows.
+**Key differentiator vs. Vercel DevTether:** Vercel's tool *cannot* route to pre-existing ports. It forces all apps through its process wrapper. Our static routing respects existing workflows.
 
 ### Engine 2: Process Orchestration (`devtether orchestrate`)
 
-**The Vercel Portless competitor.** Spawns processes, injects dynamic `$PORT`, manages process trees with `Setpgid`, captures logs with service-name prefixes.
+**The Vercel DevTether competitor.** Spawns processes, injects dynamic `$PORT`, manages process trees with `Setpgid`, captures logs with service-name prefixes.
 
 ```yaml
 orchestrate:
@@ -141,7 +141,7 @@ orchestrate:
 
 | Tool | What it does | Gap we fill |
 |------|-------------|-------------|
-| **Vercel Portless** | Named `.localhost`, dynamic ports, monorepo support | No static routing. No tunneling. No RBAC. Node.js only. |
+| **Vercel DevTether** | Named `.localhost`, dynamic ports, monorepo support | No static routing. No tunneling. No RBAC. Node.js only. |
 | **frp** | TCP/UDP reverse proxy and tunneling | Complex config. Not dev-focused. No DNS. |
 | **Ngrok** | Instant public tunnels | SaaS with strict limits. Not self-hosted. |
 | **Caddy / Nginx** | Production reverse proxying | Manual config. No DNS. No process awareness. |

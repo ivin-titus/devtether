@@ -2,17 +2,17 @@
 
 > *Version 2.0 — Revised 2026-05-30*
 
-This document provides a deep dive into the architecture of **Portless**. If you're contributing to or hacking on the codebase, this is the best place to start.
+This document provides a deep dive into the architecture of **DevTether**. If you're contributing to or hacking on the codebase, this is the best place to start.
 
 ---
 
 ## High-Level Architecture
 
-Portless is built as **4 independent engines** that coexist inside a single Go binary. Each engine solves a distinct networking problem. Two shared infrastructure layers (DNS + Proxy) underpin all engines.
+DevTether is built as **4 independent engines** that coexist inside a single Go binary. Each engine solves a distinct networking problem. Two shared infrastructure layers (DNS + Proxy) underpin all engines.
 
 ```mermaid
 graph TB
-    subgraph "Portless Binary"
+    subgraph "DevTether Binary"
         DNS["DNS Engine<br/>(Auto-resolves domains)"]
         PROXY["Proxy Engine<br/>(HTTP reverse proxy)"]
         ORCH["Orchestrator Engine<br/>(Process supervisor)"]
@@ -28,7 +28,7 @@ graph TB
     subgraph "Developer Machine"
         APP1["App on :3222<br/>(static route)"]
         APP2["App on :3223<br/>(static route)"]
-        APP3["App spawned by Portless<br/>(orchestrated)"]
+        APP3["App spawned by DevTether<br/>(orchestrated)"]
     end
 
     Browser["Browser / Teammate"] --> DNS
@@ -50,9 +50,9 @@ graph TB
 
 ```
 1. Browser requests http://portfolio.localhost
-2. OS DNS resolver forwards *.localhost to Portless DNS (127.0.0.1:53)
-3. Portless DNS returns 127.0.0.1 (or LAN IP in --lan mode)
-4. Browser connects to Portless Proxy on port 80 (or 8080 fallback)
+2. OS DNS resolver forwards *.localhost to DevTether DNS (127.0.0.1:53)
+3. DevTether DNS returns 127.0.0.1 (or LAN IP in --lan mode)
+4. Browser connects to DevTether Proxy on port 80 (or 8080 fallback)
 5. Proxy inspects Host header → looks up "portfolio.localhost" in Router
 6. Router returns Target{Port: 3222, URL: http://127.0.0.1:3222}
 7. Proxy forwards request to backend, returns response to browser
@@ -78,20 +78,22 @@ The DNS engine intercepts UDP queries on port 53 for configured TLDs and resolve
 
 **Behavior:**
 - Default bind: `127.0.0.1:53` (loopback only)
+- Fallback chain: `53` → `5353` → `Non-Fatal Error` (proxy still works without DNS)
 - LAN mode bind: `0.0.0.0:53` (all interfaces)
 - Responds to A record queries for configured TLDs (`.localhost`, `.local`, `.test`)
 - Returns `127.0.0.1` in solo mode, or the host's LAN IP in `--lan` mode
-- All non-matching queries receive `NXDOMAIN` — Portless never forwards upstream
+- All non-matching queries receive `NXDOMAIN` — DevTether never forwards upstream
 - LAN IP is cached on startup and refreshed on network changes (not per-query)
 
-**Key design decision:** Portless is NOT a recursive DNS resolver. It only answers queries for its own configured domains. See [ADR-002](adr/002-dns-design.md).
+**Key design decision:** DevTether is NOT a recursive DNS resolver. It only answers queries for its own configured domains. See [ADR-002](adr/002-dns-design.md).
 
 ### Proxy Engine (`internal/proxy`)
 
 The HTTP reverse proxy is the primary data plane for all engines.
 
 **Behavior:**
-- Default bind: `:80` (fallback `:8080` without `cap_net_bind_service`)
+- Default bind: `:80`
+- Fallback chain: `:80` → `:8080` → `:0` (OS-assigned port) on `EACCES` or `EADDRINUSE`
 - Uses `http.Server{}` with explicit timeouts (`ReadTimeout`, `WriteTimeout`, `IdleTimeout`)
 - Supports `Connection: Upgrade` for WebSocket pass-through (HMR, live reload)
 - Strips and re-sets `X-Forwarded-*` headers to prevent injection

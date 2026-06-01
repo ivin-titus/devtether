@@ -1,0 +1,8 @@
+# DevTether — Static Routing Example
+# Map your already-running services to clean domain names.
+# Start your services however you prefer, then run: devtether up
+
+routes:
+  portfolio.localhost: 3222
+  job-flow.localhost: 3223
+  api.job-flow.localhost: 8042

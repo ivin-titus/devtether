@@ -1,13 +1,14 @@
 package main
 
 import (
-	"log"
+	"os"
 
 	"github.com/ivin-titus/devtether/internal/cli"
 )
 
 func main() {
 	if err := cli.Execute(); err != nil {
-		log.Fatalf("Error executing devtether: %v", err)
+		// Cobra already prints the error, so just set the exit code.
+		os.Exit(1)
 	}
 }

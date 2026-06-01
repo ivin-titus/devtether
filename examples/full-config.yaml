@@ -1,0 +1,45 @@
+# DevTether — Full Configuration Reference
+# This file shows every supported option across all 4 engines.
+# Only include the sections you need — absent sections are ignored.
+
+# ─── Engine 1: Static Routes ────────────────────────────────────
+# Maps pre-existing services on fixed ports to named domains.
+# No process management — you start your services yourself.
+routes:
+  portfolio.localhost: 3222
+  api.localhost: 8042
+
+# ─── Engine 2: Process Orchestration (coming in Phase 2) ────────
+# orchestrate:
+#   api:
+#     domain: api.localhost
+#     command: uvicorn main:app --port $PORT
+#     cwd: ./services/api
+#     env:
+#       DATABASE_URL: postgres://localhost/dev
+#     restart: on-failure
+
+# ─── Engine 3: Tunneling (coming in Phase 3-4) ──────────────────
+# tunnel:
+#   lan: true                           # Expose services on LAN via mDNS
+#   relay: dev.yourcompany.com          # Self-hosted WAN relay
+
+# ─── Engine 4: Access Control (coming in Phase 5) ───────────────
+# access:
+#   enabled: true
+#   require_token: ["api.*", "admin.*"]
+#   public: ["docs.*"]
+
+# ─── Shared: Proxy Settings ─────────────────────────────────────
+proxy:
+  port: 80                  # Fallback chain: 80 → 8080 → OS-assigned port
+  timeouts:
+    read: 30s
+    write: 60s
+    idle: 120s
+
+# ─── Shared: DNS Settings ───────────────────────────────────────
+dns:
+  tld: ["localhost"]        # TLDs to intercept. Do NOT use "local" (mDNS conflict).
+  bind: "127.0.0.1:53"     # Fallback chain: 53 → 5353 → skip (DNS is non-fatal)
+
