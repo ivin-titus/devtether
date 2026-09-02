@@ -1,34 +1,60 @@
 # DevTether
 
+> **Single binary. Named domains. Zero hassle.**
+
+DevTether is a modular, self-hosted developer networking toolkit for Unix environments (Linux, macOS). It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean named domains — all from a single Go binary.
+
+```text
+Before:                          After:
+localhost:3222                   portfolio.localhost
+localhost:3223                   job-flow.localhost
+localhost:8042                   api.job-flow.localhost
+```
+
 > [!WARNING]
 > **Project Status: Beta**
-> DevTether is currently in Beta. Phase 1 (Static Routing) is complete and its configuration schema, CLI API, and core architecture are considered stable. Breaking changes to these will only occur with strong consensus and will be explicitly logged in the CHANGELOG. Note that Engines 2, 3, and 4 are still pending implementation.
+> DevTether is currently in Beta. Engine 1 (Static Routing) is complete — its configuration schema, CLI API, and core architecture are stable. Breaking changes to these will only occur with strong consensus and will be logged in the [CHANGELOG](CHANGELOG.md). Engines 2–4 are pending implementation.
 
-DevTether is a modular, self-hosted developer networking toolkit for Linux environments. It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean named domains — all from a single Go binary.
+## Quick Start
 
-## Architecture Overview
+```bash
+# 1. Install (see Installation below)
+# 2. Create a config file
+devtether init
 
-DevTether is built as **4 independent engines** inside a single binary:
+# 3. Edit your routes
+#    routes:
+#      portfolio.localhost: 3222
+#      api.localhost: 8042
 
-- **Engine 1: Static Routing** — Maps pre-existing services on fixed ports to named domains. Zero process management.
-- **Engine 2: Orchestration** — Spawns processes, injects dynamic `$PORT`, manages process trees.
-- **Engine 3: Tunneling** — LAN sharing via mDNS + self-hosted WAN tunneling via relay.
-- **Engine 4: Access Control** — Token-based RBAC at the proxy layer.
+# 4. Start routing
+devtether up
+```
 
-Shared infrastructure:
-- **DNS Engine**: Intercepts UDP/53 queries for configured TLDs and resolves them locally.
-- **Reverse Proxy**: Routes HTTP traffic based on `Host` header to the correct backend.
-- **IPC Daemon**: Unix Domain Socket API for hot-reloading routes without restart.
+## Installation
 
-*For a detailed sequence diagram, see the [Architecture Docs](docs/architecture.md).*
+### Option 1: Quick Install (Recommended)
 
-## Requirements
-- Go 1.21+
-- Linux (for capability support)
+```bash
+curl -sSfL https://raw.githubusercontent.com/ivin-titus/devtether/main/scripts/install.sh | sh
+```
 
-## Installation & Setup
+The script auto-detects your OS and architecture, downloads the latest release, and verifies the checksum.
 
-Build the project and make it executable globally:
+### Option 2: Download Binary
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/ivin-titus/devtether/releases):
+
+```bash
+# Example for Linux amd64
+tar -xzf devtether_Linux_x86_64.tar.gz
+chmod +x devtether
+sudo mv devtether /usr/local/bin/
+```
+
+### Option 3: Build from Source
+
+Requires Go 1.21+.
 
 ```bash
 git clone https://github.com/ivin-titus/devtether.git
@@ -37,20 +63,22 @@ go build -o devtether ./cmd/devtether
 sudo mv devtether /usr/local/bin/
 ```
 
-### Network Capabilities (`setcap`)
+### Post-Install: Network Capabilities (Linux only)
 
-DevTether requires elevated permissions to bind to Port 80 and Port 53. To avoid running the daemon as root, explicitly grant the binary `cap_net_bind_service`:
+DevTether binds to Port 80 and Port 53. To avoid running as root, grant the binary `cap_net_bind_service`:
 
 ```bash
-sudo setcap cap_net_bind_service=+ep /usr/local/bin/devtether
+sudo setcap cap_net_bind_service=+ep $(which devtether)
 ```
-> If capabilities are not assigned, or if the port is already in use, DevTether will gracefully fall back to port `8080`. If that is also occupied, it will bind to an OS-assigned ephemeral port (Port 0). The same fallback logic applies to the DNS engine (`53` → `5353` → `Non-Fatal`).
+
+> If capabilities are not assigned, or if the port is already in use, DevTether gracefully falls back: `80 → 8080 → OS-assigned port` for the proxy, and `53 → 5353 → skip` for DNS.
 
 ### DNS Configuration
 
-To unconditionally route `*.localhost` or `*.internal` to DevTether, configure your system's resolver (e.g., `systemd-resolved`):
+To route `*.localhost` or `*.internal` to DevTether, configure your system resolver:
 
 ```bash
+# systemd-resolved (Ubuntu, Fedora, etc.)
 sudo mkdir -p /etc/systemd/resolved.conf.d/
 echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~internal ~localhost" | sudo tee /etc/systemd/resolved.conf.d/devtether.conf
 sudo systemctl restart systemd-resolved
@@ -58,7 +86,7 @@ sudo systemctl restart systemd-resolved
 
 ## Usage
 
-### 1. Static Routing (`devtether.yaml`)
+### Configuration (`devtether.yaml`)
 
 Map your already-running services to clean domains:
 
@@ -69,44 +97,48 @@ routes:
   api.job-flow.localhost: 8042
 ```
 
-### 2. Orchestrated Services
+See [examples/](examples/) for more configuration patterns, including proxy timeouts and DNS settings.
 
-Let DevTether manage process lifecycles and port allocation:
-
-```yaml
-orchestrate:
-  api:
-    domain: api.localhost
-    command: uvicorn main:app --port $PORT
-    cwd: ./services/api
-```
-
-### 3. Execution
-
-Start the routing daemon:
+### Commands
 
 ```bash
-devtether start
+devtether up          # Start the routing daemon
+devtether routes      # Show active routes (live from daemon, or from config)
+devtether init        # Create a starter devtether.yaml
+devtether version     # Print version, commit, and build date
 ```
 
-### 4. IPC Operations
+## Platform Support
 
-Add, view, or remove services dynamically over the Unix socket via secondary terminal windows:
+| Platform | Status |
+|----------|--------|
+| Linux (amd64, arm64) | ✅ Fully supported |
+| macOS (amd64, arm64) | ✅ Supported |
+| Windows | 🔲 Not yet supported ([ADR-006](docs/adr/006-platform-support-and-cgo-policy.md)) |
 
-```bash
-devtether list
-devtether add grafana.localhost "npm run start:ui"
-devtether remove grafana.localhost
-```
+## Architecture
+
+DevTether is built as **4 independent engines** inside a single binary:
+
+| Engine | Purpose | Status |
+|--------|---------|--------|
+| **Engine 1: Static Routing** | Maps services on fixed ports to named domains | ✅ Complete |
+| **Engine 2: Orchestration** | Spawns processes, injects dynamic `$PORT` | 🔲 Phase 2 |
+| **Engine 3: Tunneling** | LAN sharing via mDNS + self-hosted WAN tunneling | 🔲 Phase 3–4 |
+| **Engine 4: Access Control** | Token-based RBAC at the proxy layer | 🔲 Phase 5 |
+
+*For detailed architecture, sequence diagrams, and the request flow, see [docs/architecture.md](docs/architecture.md).*
 
 ## Documentation
 
-- [Product Requirements](docs/PRD.md)
-- [Architecture Overview](docs/architecture.md)
-- [Architectural Decision Records](docs/adr/README.md)
+- [Architecture Overview](docs/architecture.md) — Deep dive into engines, request flows, and infrastructure
+- [Product Requirements](docs/PRD.md) — Goals, competitive landscape, and implementation phases
+- [Architectural Decision Records](docs/adr/README.md) — Why things are built the way they are
 
 ## Contributing
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming conventions, workflow architecture, and testing guidelines. Code behavior policies are found in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
+
 DevTether is licensed under the AGPL-3.0 License. See [LICENSE](LICENSE) for the full text.

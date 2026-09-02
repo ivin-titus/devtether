@@ -224,7 +224,7 @@ See [ADR-003: Security Model](adr/003-security-model.md) for the complete threat
 | 5 | Access Control | Token-based RBAC |
 | 6 | Polish & Community | Docs, CI/CD, goreleaser, community outreach |
 
-See the [Master Plan](../devtether_master_plan.md) for detailed task breakdowns per phase.
+Detailed task breakdowns are tracked per-phase in the project's issue tracker.
 
 ---
 
@@ -232,20 +232,19 @@ See the [Master Plan](../devtether_master_plan.md) for detailed task breakdowns 
 
 | Component | Status |
 |-----------|--------|
-| DNS Engine | ⚠️ Functional, needs security hardening (binds 0.0.0.0) |
-| Reverse Proxy | ⚠️ Functional, needs graceful shutdown + timeouts |
-| Routing Engine | ✅ Working, thread-safe |
-| Process Supervisor | ⚠️ Functional, has race conditions + zombie risk |
-| Port Manager | ⚠️ Functional, has TOCTOU race |
-| IPC Daemon | ⚠️ Functional, critical socket permission vulnerability |
-| Config Loader | ✅ Working |
-| CLI (Cobra) | ⚠️ Working, needs restructuring for new command tree |
-| Static Routing | 🔲 Not yet implemented (Phase 1) |
-| LAN Sharing | 🔲 Not yet implemented (Phase 3) |
-| WAN Tunneling | 🔲 Not yet implemented (Phase 4) |
-| RBAC | 🔲 Not yet implemented (Phase 5) |
+| DNS Engine | ✅ Production-ready (loopback-only, route-aware, port fallback) |
+| Reverse Proxy | ✅ Production-ready (graceful shutdown, timeouts, host validation) |
+| Routing Engine | ✅ Production-ready (thread-safe, hot-reloadable) |
+| Config Loader | ✅ Production-ready (validation, defaults, legacy detection) |
+| IPC Daemon | ✅ Production-ready (XDG socket, 0600 permissions) |
+| CLI (Cobra) | ✅ Production-ready (`up`, `routes` commands) |
+| Static Routing (Engine 1) | ✅ Complete |
+| Orchestration (Engine 2) | 🔲 Not yet implemented (Phase 2) |
+| LAN Sharing (Engine 3) | 🔲 Not yet implemented (Phase 3) |
+| WAN Tunneling (Engine 3) | 🔲 Not yet implemented (Phase 4) |
+| RBAC (Engine 4) | 🔲 Not yet implemented (Phase 5) |
 
-**Legend:** ✅ Production-ready | ⚠️ Functional with known issues | 🔲 Not started
+**Legend:** ✅ Production-ready | 🔲 Not started
 
 ---
 

@@ -82,7 +82,7 @@ The DNS engine intercepts UDP queries on port 53 for configured TLDs and resolve
 - Default bind: `127.0.0.1:53` (loopback only)
 - Fallback chain: `53` → `5353` → `Non-Fatal Error` (proxy still works without DNS)
 - LAN mode bind: `0.0.0.0:53` (all interfaces)
-- Responds to A record queries for configured TLDs (`.localhost`, `.local`, `.test`)
+- Responds to A record queries for configured TLDs (`.localhost`, `.internal`, `.test`)
 - Returns `127.0.0.1` in solo mode, or the host's LAN IP in `--lan` mode
 - All non-matching queries receive `NXDOMAIN` — DevTether never forwards upstream
 - LAN IP is cached on startup and refreshed on network changes (not per-query)
@@ -226,32 +226,37 @@ Separate build target in the same repository. Deployed on a VPS.
 ```
 devtether/
 ├── cmd/
-│   ├── devtether/               # Main CLI binary
-│   │   └── main.go
-│   └── devtether-relay/         # Relay server binary
+│   └── devtether/               # Main CLI binary
 │       └── main.go
 │
 ├── internal/
 │   ├── cli/                    # Cobra command definitions
 │   ├── config/                 # YAML config parsing + validation
+│   ├── daemon/                 # IPC Unix socket server + client
 │   ├── dns/                    # DNS Engine
-│   ├── proxy/                  # Proxy Engine (server + handler + middleware)
-│   ├── router/                 # Route table (domain → target)
-│   ├── orchestrator/           # Process Supervisor + Port Manager
-│   ├── tunnel/                 # Tunnel client + LAN broadcaster
-│   ├── access/                 # Token generation + validation + store
-│   └── daemon/                 # IPC Unix socket server + client
+│   ├── proxy/                  # Proxy Engine (server + handler)
+│   └── router/                 # Route table (domain → target)
 │
 ├── docs/
 │   ├── PRD.md                  # Product Requirements Document
 │   ├── architecture.md         # This file
 │   └── adr/                    # Architectural Decision Records
 │
-├── devtether.yaml               # Example config
+├── examples/                    # Example config files
+├── devtether.yaml               # Local config (gitignored)
 ├── go.mod
 ├── go.sum
 ├── LICENSE
 └── README.md
+```
+
+### Planned Directories (Future Phases)
+
+```
+│   ├── internal/orchestrator/   # Process Supervisor + Port Manager (Phase 2)
+│   ├── internal/tunnel/         # Tunnel client + LAN broadcaster (Phase 3-4)
+│   ├── internal/access/         # Token generation + validation (Phase 5)
+│   └── cmd/devtether-relay/     # Relay server binary (Phase 4)
 ```
 
 ---

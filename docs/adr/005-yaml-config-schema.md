@@ -49,8 +49,8 @@ proxy:
     idle: 120s
 
 dns:
-  tld: ["localhost", "local"]
-  bind: "0.0.0.0:53"
+  tld: ["localhost", "internal"]
+  bind: "127.0.0.1:53"
 ```
 
 ### Design Principles
