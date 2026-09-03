@@ -9,11 +9,10 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"syscall"
 	"time"
 
 	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
@@ -71,7 +70,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	log.Printf("[proxy] listening on %s", addr)
-	if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+	if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("proxy: server error: %w", err)
 	}
 	return nil
@@ -88,9 +87,9 @@ func (s *Server) bind() (net.Listener, string, error) {
 		return listener, addr, nil
 	}
 
-	if isPermissionError(err) {
+	if netutil.IsPermissionError(err) {
 		log.Printf("[proxy] permission denied on port %d — trying port %d", s.port, s.fallback)
-	} else if isAddrInUse(err) {
+	} else if netutil.IsAddrInUse(err) {
 		log.Printf("[proxy] port %d already in use — trying port %d", s.port, s.fallback)
 	} else {
 		return nil, "", fmt.Errorf("proxy: failed to bind to port %d: %w", s.port, err)
@@ -103,7 +102,7 @@ func (s *Server) bind() (net.Listener, string, error) {
 		return listener, addr, nil
 	}
 
-	if isPermissionError(err) || isAddrInUse(err) {
+	if netutil.IsRecoverable(err) {
 		log.Printf("[proxy] port %d also unavailable — binding to OS-assigned port", s.fallback)
 	} else {
 		return nil, "", fmt.Errorf("proxy: failed to bind to fallback port %d: %w", s.fallback, err)
@@ -116,28 +115,4 @@ func (s *Server) bind() (net.Listener, string, error) {
 	}
 	addr = listener.Addr().String()
 	return listener, addr, nil
-}
-
-// isPermissionError checks if the error is EACCES or EPERM.
-func isPermissionError(err error) bool {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		var sysErr *os.SyscallError
-		if errors.As(opErr.Err, &sysErr) {
-			return sysErr.Err == syscall.EACCES || sysErr.Err == syscall.EPERM
-		}
-	}
-	return errors.Is(err, os.ErrPermission)
-}
-
-// isAddrInUse checks if the error is EADDRINUSE.
-func isAddrInUse(err error) bool {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		var sysErr *os.SyscallError
-		if errors.As(opErr.Err, &sysErr) {
-			return sysErr.Err == syscall.EADDRINUSE
-		}
-	}
-	return false
 }
