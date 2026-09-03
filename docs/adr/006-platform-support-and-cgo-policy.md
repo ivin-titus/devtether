@@ -13,7 +13,7 @@ Additionally, the codebase uses several Unix-specific constructs:
 - Unix domain sockets for IPC (`net.Listen("unix", ...)`).
 - POSIX signals (`syscall.SIGTERM`) for graceful shutdown.
 - Linux kernel capabilities (`setcap cap_net_bind_service`) for binding to privileged ports.
-- Future engines plan to use `Setpgid`, `sh -c`, and POSIX signal escalation (SIGTERM → SIGKILL).
+- Future engines (e.g., Engine 2 powering Layer 2) plan to use `Setpgid`, `sh -c`, and POSIX signal escalation (`SIGTERM` → `SIGKILL`).
 
 These constructs work on Linux and macOS but not on Windows.
 
@@ -48,7 +48,7 @@ If Windows support is pursued, the approach is platform build tags (`_linux.go`,
 - Signals: `SIGTERM` → `GenerateConsoleCtrlEvent`.
 - Process management: `Setpgid` + `sh -c` → Job Objects + `cmd.exe /C`.
 
-Engines that cannot be made cross-platform (e.g., Engine 2's process supervisor) would be excluded on Windows via build tags, with a clear runtime error: "Engine 2 (Orchestration) is not supported on Windows."
+Engines that cannot be made cross-platform (e.g., Engine 2's process supervisor for Layer 2) would be excluded on Windows via build tags, with a clear runtime error: "Layer 2 (Orchestration) is not supported on Windows."
 
 ## Consequences
 

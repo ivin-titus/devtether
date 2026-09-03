@@ -88,52 +88,28 @@ One YAML file. One binary. One command: `devtether up`.
 
 ---
 
-## 5. The 4 Engines
+## 5. The Three-Layer Architecture
 
-### Engine 1: Static Routing (`devtether route`)
+DevTether is conceptually built around three independent layers that coexist inside one binary *(internally powered by 4 highly modular engines — see [ADR-001](adr/001-modular-engine-architecture.md))*. Developers opt-in to the layers they need — they never pay cognitive load for features they don't use.
 
-**The zero-friction entry point.** Maps pre-existing services on fixed ports to named domains. No process management, no port injection. DevTether just handles DNS + proxy.
+### Layer 1: The Networking Layer
+**The zero-friction entry point.** Handles all traffic, routing, and local network topologies.
+- **Static Routing:** Maps pre-existing services on fixed ports to named `.localhost` domains.
+- **Intelligent IP Cycling:** Dynamically binds to `127.0.0.x` loopback addresses, avoiding port conflicts by actively scanning for `0.0.0.0` bindings (highly optimized O(1) checks).
+- **Traffic Inspection:** Buffers network payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays in the GUI.
+- **Smart Project-Boundary CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while blocking cross-project local access to establish a base layer of local security.
+- **Rich Error Pages:** Serves ultra-lightweight Cloudflare-style HTML error pages if a backend is down, functioning perfectly even if the GUI process is offline.
 
-```yaml
-routes:
-  portfolio.localhost: 3222
-  job-flow.localhost: 3223
-  api.job-flow.localhost: 8042
-```
+### Layer 2: The Process Orchestrator Layer
+**The Vercel DevTether competitor.** Manages the lifecycle of developer applications (Node, Go, Python).
+- **Process Groups:** Orchestrates apps into isolated Process Groups (PGIDs) for clean shutdown (`devtether stop <group>`).
+- **Dynamic Ports:** Allocates ephemeral `$PORT` environment variables.
+- **Unified Logging:** Captures stdout/stderr and prefixes them (e.g., `[app | api]`) to clearly separate them from network access logs (`[proxy | portfolio]`).
 
-**Key differentiator vs. Vercel DevTether:** Vercel's tool *cannot* route to pre-existing ports. It forces all apps through its process wrapper. Our static routing respects existing workflows.
-
-### Engine 2: Process Orchestration (`devtether orchestrate`)
-
-**The Vercel DevTether competitor.** Spawns processes, injects dynamic `$PORT`, manages process trees with `Setpgid`, captures logs with service-name prefixes.
-
-```yaml
-orchestrate:
-  api:
-    domain: api.localhost
-    command: uvicorn main:app --port $PORT
-    cwd: ./services/api
-```
-
-**Coexistence:** Static routes and orchestrated services share the same DNS + Proxy engines and can coexist in one `devtether.yaml`.
-
-### Engine 3: Tunneling (`devtether tunnel`)
-
-**The self-hosted Ngrok alternative.** Two modes:
-
-- **LAN Mode:** Binds to `0.0.0.0`, broadcasts via mDNS. Any device on the same WiFi/VPN can access services.
-- **WAN Mode:** Connects to a self-hosted `devtether-relay` on a VPS. Exposes local services at `https://app.dev.yourcompany.com` with auto-provisioned Let's Encrypt certificates.
-
-**Truly self-hosted.** Zero SaaS dependency. You own the domain, server, and certificates.
-
-### Engine 4: Access Control (RBAC)
-
-**The enterprise signal.** Token-based access control at the proxy layer.
-
-- Generate scoped tokens: `devtether access grant --name "frontend-team" --services "api.*" --expires 7d`
-- Tokens are HMAC-SHA256 signed JWTs validated before forwarding.
-- WAN tunnels force RBAC on by default — no opt-out.
-- Future: SSO integration, policy-as-code.
+### Layer 3: The Access Controls Layer
+**The enterprise signal.** Secures cross-network and cross-org collaboration.
+- **Centralized RBAC & IAM:** A self-hosted identity layer controlling who can access which local services when exposed over LAN (mDNS) or WAN (relay tunnels).
+- **Tokens & Groups:** Ensures that a frontend teammate can access the `api` service, but not the local `admin` database. WAN tunnels force RBAC on by default.
 
 ---
 
@@ -238,14 +214,14 @@ Detailed task breakdowns are tracked per-phase in the project's issue tracker.
 | Config Loader | ✅ Production-ready (validation, defaults, legacy detection) |
 | IPC Daemon | ✅ Production-ready (XDG socket, 0600 permissions) |
 | CLI (Cobra) | ✅ Production-ready (`up`, `routes` commands) |
-| Static Routing (Engine 1) | ✅ Complete |
-| Orchestration (Engine 2) | 🔲 Not yet implemented (Phase 2) |
-| LAN Sharing (Engine 3) | 🔲 Not yet implemented (Phase 3) |
-| WAN Tunneling (Engine 3) | 🔲 Not yet implemented (Phase 4) |
-| RBAC (Engine 4) | 🔲 Not yet implemented (Phase 5) |
+| Layer 1: Networking | ✅ Foundation Complete |
+| Layer 2: Orchestration | 🔲 Not yet implemented (Phase 2) |
+| Layer 3: Access Control (LAN/WAN + RBAC) | 🔲 Not yet implemented (Phases 3-5) |
 
 **Legend:** ✅ Production-ready | 🔲 Not started
 
 ---
 
 *This PRD is a living document. It will be updated as the project evolves through its implementation phases.*
+
+

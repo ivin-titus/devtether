@@ -63,26 +63,56 @@ go build -o devtether ./cmd/devtether
 sudo mv devtether /usr/local/bin/
 ```
 
-### Post-Install: Network Capabilities (Linux only)
+### Post-Install Setup
 
-DevTether binds to Port 80 and Port 53. To avoid running as root, grant the binary `cap_net_bind_service`:
+Depending on your operating system, there are a few final steps to configure DevTether for a seamless experience.
+
+<details open>
+<summary><b>🐧 Linux Setup</b></summary>
+
+**1. Network Capabilities**
+
+DevTether binds to Port 80 and Port 53. To avoid running as `root`, grant the binary capabilities:
 
 ```bash
 sudo setcap cap_net_bind_service=+ep $(which devtether)
 ```
+> *If you skip this, DevTether gracefully falls back to unprivileged ports (8080 for HTTP, 5353 for DNS).*
 
-> If capabilities are not assigned, or if the port is already in use, DevTether gracefully falls back: `80 → 8080 → OS-assigned port` for the proxy, and `53 → 5353 → skip` for DNS.
+**2. DNS Configuration**
 
-### DNS Configuration
+Configure your system resolver to route `*.localhost` to DevTether.
 
-To route `*.localhost` or `*.internal` to DevTether, configure your system resolver:
-
+**systemd-resolved (Ubuntu, Fedora, Arch Linux):**
 ```bash
-# systemd-resolved (Ubuntu, Fedora, etc.)
 sudo mkdir -p /etc/systemd/resolved.conf.d/
 echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~internal ~localhost" | sudo tee /etc/systemd/resolved.conf.d/devtether.conf
 sudo systemctl restart systemd-resolved
 ```
+
+**dnsmasq (Non-systemd / Alpine):**
+```bash
+echo "server=/localhost/127.0.0.1#53" | sudo tee /etc/dnsmasq.d/devtether.conf
+sudo systemctl restart dnsmasq
+```
+</details>
+
+<details open>
+<summary><b>🍎 macOS Setup</b></summary>
+
+**1. Port Binding**
+
+macOS does not support capabilities like Linux. To use ports 80 and 53, run `devtether` with `sudo`, or simply let it fall back to the unprivileged ports (`8080` and `5353`).
+
+**2. DNS Configuration**
+
+macOS has native support for domain-specific resolvers via `/etc/resolver/`:
+```bash
+sudo mkdir -p /etc/resolver
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/localhost
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/internal
+```
+</details>
 
 ## Usage
 
@@ -119,14 +149,15 @@ devtether version                   # Print version, commit, and build date
 
 ## Architecture
 
-DevTether is built as **4 independent engines** inside a single binary:
+DevTether is evolving from a simple reverse proxy into a comprehensive Developer Platform, structured into **Three Main Layers** inside a single Go binary. *(Internally, these layers are powered by **4 independent modular engines** — see [ADR-001](docs/adr/001-modular-engine-architecture.md)).*
 
-| Engine | Purpose | Status |
-|--------|---------|--------|
-| **Engine 1: Static Routing** | Maps services on fixed ports to named domains | ✅ Complete |
-| **Engine 2: Orchestration** | Spawns processes, injects dynamic `$PORT` | 🔲 Phase 2 |
-| **Engine 3: Tunneling** | LAN sharing via mDNS + self-hosted WAN tunneling | 🔲 Phase 3–4 |
-| **Engine 4: Access Control** | Token-based RBAC at the proxy layer | 🔲 Phase 5 |
+| Layer | Purpose | Status |
+|-------|---------|--------|
+| **1. Networking Layer** | Reverse Proxy, DNS, Smart CORS, Traffic Inspection, IP Cycling | ✅ Foundation Complete |
+| **2. Process Orchestrator** | Process Groups (PGID), ephemeral ports, unified logging | 🔲 Planned |
+| **3. Access Controls** | Centralized IAM, RBAC, cross-network collaboration tokens | 🔲 Planned |
+
+DevTether provides a **Unified Interface**: both the CLI and the stateless, lazy-loaded Web GUI (`devtether.localhost`) communicate via the exact same internal IPC Daemon API. What you can do in the GUI, you can do in the CLI.
 
 *For detailed architecture, sequence diagrams, and the request flow, see [docs/architecture.md](docs/architecture.md).*
 

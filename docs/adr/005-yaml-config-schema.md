@@ -5,7 +5,7 @@
 
 ## Context
 
-DevTether supports 4 independent engines, each with different configuration needs. We needed to decide between:
+DevTether's internal architecture relies on 4 independent engines (conceptually grouped into Three Layers), each with different configuration needs. We needed to decide between:
 
 1. **Separate config files per engine** (e.g., `devtether-routes.yaml`, `devtether-orchestrate.yaml`, `devtether-tunnel.yaml`)
 2. **A single unified `devtether.yaml`** with top-level keys for each engine
@@ -15,12 +15,12 @@ DevTether supports 4 independent engines, each with different configuration need
 Use a **single `devtether.yaml`** with distinct top-level keys for each engine:
 
 ```yaml
-# Engine 1: Static Routes
+# Engine 1 (Layer 1): Static Routes
 routes:
   portfolio.localhost: 3222
   job-flow.localhost: 3223
 
-# Engine 2: Orchestrated Services
+# Engine 2 (Layer 2): Orchestrated Services
 orchestrate:
   api:
     domain: api.localhost
@@ -28,12 +28,12 @@ orchestrate:
     cwd: ./services/api
     restart: on-failure
 
-# Engine 3: Tunnel Config
+# Engine 3 (Layer 3): Tunnel Config
 tunnel:
   relay: dev.yourcompany.com
   lan: true
 
-# Engine 4: Access Control
+# Engine 4 (Layer 3): Access Control
 access:
   enabled: true
   require_token: ["api.*", "admin.*"]

@@ -26,6 +26,15 @@ Restructure DevTether into **4 independent engines** inside a single binary:
 
 Each engine is activated by its presence in the `devtether.yaml` config. If a section is absent, that engine is not loaded.
 
+## Evolution: The Three-Layer Architecture
+
+As the project evolved (v2.0), these 4 internal engines were conceptually grouped into a user-facing **Three-Layer Architecture** to simplify the mental model for developers:
+- **Layer 1 (Networking):** Powered by Engine 1 (Static Routing) + Shared Infrastructure.
+- **Layer 2 (Orchestrator):** Powered by Engine 2 (Orchestration).
+- **Layer 3 (Access Controls):** Powered by Engine 3 (Tunneling) and Engine 4 (Access Control).
+
+The strict internal boundaries of the 4 engines remain intact in the codebase, ensuring high modularity and separation of concerns.
+
 ## Consequences
 
 ### Positive

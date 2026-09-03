@@ -2,7 +2,7 @@
 
 > *Version 2.0-beta — Revised 2026-05-30*
 > 
-> **Project Status: Beta** — Engine 1 (Static Routing) is fully implemented and its core architecture is stable. Engines 2, 3, and 4 are planned for future phases.
+> **Project Status: Beta** — Layer 1 (Networking) is fully implemented and its core architecture is stable. Layers 2 and 3 are planned for future phases.
 
 This document provides a deep dive into the architecture of **DevTether**. If you're contributing to or hacking on the codebase, this is the best place to start.
 
@@ -13,16 +13,15 @@ This document provides a deep dive into the architecture of **DevTether**. If yo
 
 ## High-Level Architecture
 
-DevTether is built as **4 independent engines** that coexist inside a single Go binary. Each engine solves a distinct networking problem. Two shared infrastructure layers (DNS + Proxy) underpin all engines.
+DevTether is evolving from a simple reverse proxy into a comprehensive Developer Platform. To maintain strict Separation of Concerns (SoC) and avoid architectural bloat, all features are conceptually structured into **Three Main Layers**. Internally, these layers are powered by **4 independent modular engines** (see [ADR-001](adr/001-modular-engine-architecture.md)) inside a single Go binary. Two shared infrastructure layers (DNS + Proxy) underpin all higher-level features.
 
 ```mermaid
 graph TB
     subgraph "DevTether Binary"
         DNS["DNS Engine<br/>(Auto-resolves domains)"]
         PROXY["Proxy Engine<br/>(HTTP reverse proxy)"]
-        ORCH["Orchestrator Engine<br/>(Process supervisor)"]
-        TUNNEL["Tunnel Engine<br/>(Secure relay client)"]
-        ACCESS["Access Engine<br/>(Token-based RBAC)"]
+        ORCH["Orchestrator<br/>(Process supervisor)"]
+        ACCESS["Access & Tunneling<br/>(Tokens + Relay)"]
         IPC["IPC Daemon<br/>(Unix socket API)"]
     end
 
@@ -31,47 +30,26 @@ graph TB
     end
 
     subgraph "Developer Machine"
-        APP1["App on :3222<br/>(static route)"]
-        APP2["App on :3223<br/>(static route)"]
-        APP3["App spawned by DevTether<br/>(orchestrated)"]
+        APP1["App on :3222<br/>(Static route)"]
+        APP2["App spawned by DevTether<br/>(Orchestrated PGID)"]
     end
 
     Browser["Browser / Teammate"] --> DNS
     DNS --> PROXY
     ACCESS --> PROXY
     PROXY --> APP1
+    ORCH --> APP2
     PROXY --> APP2
-    ORCH --> APP3
-    PROXY --> APP3
-    TUNNEL -->|"WebSocket (WSS)"| RELAY
+    ACCESS -->|"WebSocket (WSS)"| RELAY
     RELAY -->|"Public URL"| Internet["External Access"]
-    CLI["CLI Commands"] --> IPC
+    CLI["CLI / Web GUI"] --> IPC
     IPC --> DNS
     IPC --> PROXY
     IPC --> ORCH
 ```
 
-### Request Flow (Static Routing)
-
-```
-1. Browser requests http://portfolio.localhost
-2. OS DNS resolver forwards *.localhost to DevTether DNS (127.0.0.1:53)
-3. DevTether DNS returns 127.0.0.1 (or LAN IP in --lan mode)
-4. Browser connects to DevTether Proxy on port 80 (or 8080 fallback)
-5. Proxy inspects Host header → looks up "portfolio.localhost" in Router
-6. Router returns Target{Port: 3222, URL: http://127.0.0.1:3222}
-7. Proxy forwards request to backend, returns response to browser
-```
-
-### Request Flow (Orchestrated)
-
-```
-1-4. Same as static routing
-5. Proxy inspects Host header → looks up "api.localhost" in Router
-6. Router returns Target{Port: 43521, URL: http://127.0.0.1:43521}
-   (port was dynamically allocated by PortManager and injected as $PORT)
-7. Proxy forwards to the process spawned by the Supervisor
-```
+### The Unified Interface (CLI & GUI)
+DevTether operates on a **Unified Interface** principle. The Web GUI (`devtether.localhost`) is completely stateless and lazy-loaded (it is NOT a heavy background process). Both the CLI (e.g., `devtether stop api`) and the Web GUI call the exact same internal **IPC Daemon REST API**. This guarantees zero DRY violations — whatever is possible in the GUI is equally possible via the CLI.
 
 ---
 
@@ -147,34 +125,37 @@ Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication
 
 ---
 
-## Engine 1: Static Routing
+## Layer 1: The Networking Layer
+
+This layer handles all traffic, routing, and local network topologies.
 
 **Config section:** `routes:`
 
-No process management. The Router is populated directly from the YAML config with fixed `domain → port` mappings. The developer starts their own apps.
+- **Static Routing:** Maps pre-existing services on fixed ports to named domains. No process management. The Router is populated directly from the YAML config.
+- **Intelligent IP Cycling:** Actively scans `/proc/net/tcp` for `0.0.0.0` bindings. If `127.0.0.1:80` is occupied, it cycles to `127.0.0.2`, `127.0.0.3`, etc., using highly optimized O(1) checks.
+- **Smart CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while blocking cross-project local access.
+- **Traffic Inspection:** Buffers payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays.
+- **Rich Error Pages:** Serves an ultra-lightweight Cloudflare-style HTML error page if a backend goes down.
 
 ---
 
-## Engine 2: Process Orchestrator (`internal/orchestrator`)
+## Layer 2: The Process Orchestrator Layer (`internal/orchestrator`)
 
 **Config section:** `orchestrate:`
 
 ### Supervisor
-
 - Spawns processes via `exec.Command("sh", "-c", command)`
-- Sets `SysProcAttr{Setpgid: true}` for process group management
-- Injects `PORT=<allocated_port>` into the command's environment
-- Captures stdout/stderr with `[service-name]` prefixes
-- Monitors process exit in a background goroutine, cleans up route + port on crash
+- Sets `SysProcAttr{Setpgid: true}` for **Process Group** management.
+- Injects `PORT=<allocated_port>` into the command's environment.
+- Captures stdout/stderr with `[service-name]` prefixes for **Unified Logging**.
+- Monitors process exit in a background goroutine, cleans up route + port on crash.
 
 ### Port Manager
-
-- Allocates ephemeral ports via `net.ListenTCP("127.0.0.1:0")`
-- Maintains an internal dedup map to prevent double-allocation
-- Releases ports when services are stopped or crash
+- Allocates ephemeral ports via `net.ListenTCP("127.0.0.1:0")`.
+- Maintains an internal dedup map to prevent double-allocation.
+- Releases ports when services are stopped or crash.
 
 ### Shutdown Sequence
-
 ```
 1. Send SIGTERM to process group (-PID)
 2. Wait 5 seconds
@@ -185,42 +166,24 @@ No process management. The Router is populated directly from the YAML config wit
 
 ---
 
-## Engine 3: Tunnel (`internal/tunnel`)
+## Layer 3: The Access Controls Layer (`internal/access` & `internal/tunnel`)
 
-**Config section:** `tunnel:`
+**Config sections:** `tunnel:` and `access:`
 
-### LAN Mode
+This layer secures cross-network and cross-org collaboration.
 
-- Switches proxy bind to `0.0.0.0`
-- Broadcasts service names via mDNS (`avahi-publish-address` on Linux, `dns-sd` on macOS)
-- Auto-detects and follows LAN IP changes
+### LAN Sharing & mDNS
+- Switches proxy bind to `0.0.0.0`.
+- Broadcasts service names via mDNS (`avahi-publish-address` on Linux, `dns-sd` on macOS).
 
-### WAN Mode
+### WAN Tunneling (Self-Hosted Relay)
+- Establishes outbound WebSocket (WSS) connection to a self-hosted `devtether-relay`.
+- The relay performs TLS termination with auto-provisioned Let's Encrypt certificates.
 
-- Establishes outbound WebSocket (WSS) connection to `devtether-relay`
-- Single connection multiplexes all service tunnels via a lightweight framing protocol
-- Relay performs TLS termination with auto-provisioned Let's Encrypt certificates
-- Relay routes incoming HTTPS requests by inspecting the `Host` header subdomain
-
-### Relay Binary (`cmd/devtether-relay`)
-
-Separate build target in the same repository. Deployed on a VPS.
-
-- Accepts tunnel registrations from authenticated clients
-- Issues and validates per-developer registration tokens scoped to subdomain patterns
-- Enforces rate limits per tunnel
-- Logs all requests in structured JSON
-
----
-
-## Engine 4: Access Control (`internal/access`)
-
-**Config section:** `access:`
-
-- Generates HMAC-SHA256 signed JWTs with: issuer, scoped services (glob patterns), expiry, revocation ID
-- Proxy middleware validates tokens on incoming requests before forwarding
-- Token store: local SQLite database or flat file
-- WAN tunnels force RBAC on by default
+### Centralized RBAC & IAM
+- Generates HMAC-SHA256 signed JWTs with scoped services (glob patterns).
+- Proxy middleware validates tokens on incoming requests before forwarding.
+- WAN tunnels force RBAC on by default — no opt-out.
 
 ---
 
@@ -256,11 +219,33 @@ devtether/
 ### Planned Directories (Future Phases)
 
 ```
-│   ├── internal/orchestrator/   # Process Supervisor + Port Manager (Phase 2)
-│   ├── internal/tunnel/         # Tunnel client + LAN broadcaster (Phase 3-4)
-│   ├── internal/access/         # Token generation + validation (Phase 5)
-│   └── cmd/devtether-relay/     # Relay server binary (Phase 4)
+│   ├── internal/orchestrator/   # Process Supervisor + Port Manager (Layer 2)
+│   ├── internal/tunnel/         # Tunnel client + LAN broadcaster (Layer 3)
+│   ├── internal/access/         # Token generation + validation (Layer 3)
+│   └── cmd/devtether-relay/     # Relay server binary (Layer 3)
 ```
+
+---
+
+## Developer Experience (DX) Architecture
+
+### The Stateless Web GUI (`devtether.localhost`)
+The Web GUI is an ultra-lightweight (Vanilla JS / Preact) dashboard served internally via the Proxy Engine.
+- **Zero State:** It acts strictly as a visual editor for `devtether.yaml` and a consumer of the IPC Daemon's REST API.
+- **Hot Reloading:** When a user clicks "Add Service" in the GUI, it updates the YAML file via the IPC API, triggering the exact same hot-reload flow as if they edited the file via CLI.
+- **Network Inspector:** Buffers requests using `sync.Pool` (adhering to zero-bloat engineering standards) and streams them over the IPC socket for webhook inspection and replay.
+
+### Unified Logging Architecture
+As DevTether orchestrates multiple processes, it streams logs via the IPC daemon using strict service prefixes:
+- `[proxy | portfolio]` for network access logs (Layer 1).
+- `[app   | api]` for `stdout`/`stderr` from orchestrated processes (Layer 2).
+- The CLI supports Docker-style streaming: `devtether logs -f <service> --type=network`.
+
+### Granular Service Management
+The command `devtether stop <service>` instructs the IPC Daemon to coordinate across layers:
+1. **Layer 1 (Networking):** Disables the static route.
+2. **Layer 2 (Orchestration):** Sends `SIGTERM` to the process tree and releases the ephemeral port.
+3. **Layer 3 (Access/Tunnel):** Unregisters the service from the WAN relay and stops mDNS broadcast.
 
 ---
 
@@ -297,4 +282,4 @@ devtether/
 
 ---
 
-*This architecture document is a living reference. It will be updated as engines are implemented across the project's phases.*
+*This architecture document is a living reference. It will be updated as layers are implemented across the project's phases.*

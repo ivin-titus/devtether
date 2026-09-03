@@ -4,7 +4,25 @@ All notable changes to DevTether are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
-## [0.2.0] — 2026-06-01
+## [v2.0.0-beta.2] — 2026-09-04
+
+### Added
+- **New CLI Commands:** Added `version`, `--config`, and `init` commands for better user onboarding.
+- **Install Script:** Added `scripts/install.sh` for one-liner curl installation with OS/architecture detection.
+- **Local Dev Tools:** Added `scripts/test.sh` to seamlessly mirror CI checks locally.
+- **CI/CD Pipeline:** Fully integrated GoReleaser and GitHub Actions workflows for automated cross-platform binary distribution.
+
+### Fixed
+- **DNS Server:** Resolved a critical data race during server shutdown.
+- **DNS Server:** Fixed an NXDOMAIN contract violation where unmatched queries returned empty answers instead of standard errors.
+- **Code Quality:** Resolved over 40+ strict linter warnings (errcheck, gosec, staticcheck, nilerr) uncovered during a deep codebase audit.
+- **DRY Issues:** Consolidated duplicate error detection and version formatting logic.
+
+### Changed
+- **Documentation Overhaul:** Formally documented the **Three-Layer Master Architecture** (Networking, Process Orchestrator, Access Controls) conceptually grouping the internal 4 modular engines for a clearer mental model.
+- **CI Hardening:** Upgraded to the Go 1.27.1 ecosystem and integrated `golangci-lint` as a strict gatekeeper.
+
+## [v2.0.0-beta.1] — 2026-06-01
 
 ### Changed
 - **Project renamed** from Portless to DevTether.
@@ -31,8 +49,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - Proxy: Added `ReadTimeout`, `WriteTimeout`, `IdleTimeout`.
 - Proxy: Host header sanitization (strip port, lowercase, validation).
 
-## [0.1.0] — 2026-05-30
+## [v1.0.0] (Legacy Portless Prototype) — 2026-05-30
 
 ### Added
-- Initial v0 prototype: monolithic daemon with coupled DNS, proxy, and orchestrator.
-- This version was retired due to architectural coupling issues.
+- Initial prototype: monolithic daemon with coupled DNS, proxy, and orchestrator.
+- This version was retired and rewritten for v2.0 due to architectural coupling issues.

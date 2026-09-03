@@ -5,7 +5,7 @@
 
 ## Context
 
-DevTether's WAN tunneling feature (Engine 3, Mode B) requires a relay server deployed on a VPS to accept incoming HTTPS traffic and forward it through WebSocket tunnels to developers' local machines.
+DevTether's WAN tunneling feature (Engine 3, part of Layer 3) requires a relay server deployed on a VPS to accept incoming HTTPS traffic and forward it through WebSocket tunnels to developers' local machines.
 
 The question: should the relay be embedded in the main `devtether` binary, or built as a separate `devtether-relay` binary?
 
