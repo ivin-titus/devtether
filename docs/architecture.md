@@ -6,6 +6,9 @@
 
 This document provides a deep dive into the architecture of **DevTether**. If you're contributing to or hacking on the codebase, this is the best place to start.
 
+> **Code standards:** See [Engineering Standards](engineering-standards.md) for
+> DRY, SoC, error handling, and testing rules that apply to all packages below.
+
 ---
 
 ## High-Level Architecture

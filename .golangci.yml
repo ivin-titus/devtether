@@ -1,0 +1,43 @@
+# golangci-lint configuration for DevTether.
+# Curated linter set — only linters that find real bugs, not style noise.
+# See: docs/engineering-standards.md
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    # Core correctness
+    - errcheck       # Unchecked errors
+    - govet          # Go vet checks
+    - staticcheck    # Deep semantic analysis
+    - unused         # Unused code
+    - ineffassign    # Ineffective assignments
+
+    # Security
+    - gosec          # AST security scanner
+
+    # Bug prevention
+    - bodyclose      # Unclosed HTTP response bodies
+    - noctx          # HTTP requests without context
+    - nilerr         # Returning nil error with non-nil value
+
+    # Style (minimal, not noisy)
+    - misspell       # Typos in comments/strings
+    - unconvert      # Unnecessary type conversions
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # Avoid micro-optimization noise
+  gosec:
+    excludes:
+      - G104  # Handled by errcheck
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

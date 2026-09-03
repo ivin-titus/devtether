@@ -1,74 +1,149 @@
 # Contributing to DevTether
 
-First off, thank you for considering contributing to **DevTether**! It's people like you that make the open-source community such an amazing place to learn, inspire, and create.
-
-This document serves as a set of guidelines for contributing to this project. These are mostly guidelines, not strict rules. Use your best judgment, and feel free to propose changes to this document in a pull request.
+Thank you for considering contributing to **DevTether**! This document covers
+everything you need to know before submitting a pull request.
 
 ## Code of Conduct
 
-By participating in this project, you are expected to uphold our [Code of Conduct](CODE_OF_CONDUCT.md). Please report unacceptable behavior to the project maintainers.
+By participating in this project, you are expected to uphold our
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
-## How Can I Contribute?
+## Engineering Standards
+
+**Read before writing code:** [docs/engineering-standards.md](docs/engineering-standards.md)
+
+This document defines the quality bar for all contributions — DRY, SoC, error
+handling, testing, security, naming, and more. CI enforces these rules
+automatically, so save yourself a round-trip and read them first.
+
+## How to Contribute
 
 ### 🐛 Reporting Bugs
 
-Before creating bug reports, please check the existing issues as you might find out that you don't need to create one. When you are creating a bug report, please include as many details as possible:
+Before creating a bug report, check existing issues. When filing:
 
-*   Use a clear and descriptive title for the issue to identify the problem.
-*   Describe the exact steps which reproduce the problem in as many details as possible.
-*   Provide specific examples to demonstrate the steps.
-*   Describe the behavior you observed after following the steps and point out what exactly is the problem with that behavior.
-*   Explain which behavior you expected to see instead and why.
-*   Include your Operating System, Go version, and local DNS setup.
+- Use a clear title that identifies the problem
+- Describe exact steps to reproduce
+- Include your OS, Go version, and `devtether version` output
+- Attach your `devtether.yaml` (sanitized) if relevant
 
 ### 💡 Suggesting Enhancements
 
-Enhancement suggestions are tracked as GitHub issues. When creating an enhancement request:
+Enhancement suggestions are tracked as GitHub issues. Include:
 
-*   Use a clear and descriptive title for the issue to identify the suggestion.
-*   Provide a step-by-step description of the suggested enhancement in as many details as possible.
-*   Explain why this enhancement would be useful to most DevTether users.
-*   You may also create an architectural diagram or draft a PR describing the enhancement if it modifies core subsystems (like DNS or the Reverse Proxy).
+- A clear title identifying the suggestion
+- Step-by-step description of the proposed behavior
+- Why this would be useful to most DevTether users
+- Reference relevant [ADRs](docs/adr/) if the change affects architecture
 
 ### 💻 Pull Requests
 
-The process described here has several goals:
-- Maintain DevTether's quality
-- Fix problems that are important to users
-- Engage the community in working toward the best possible lightweight developer tool
+#### Before You Start
 
-**Pull Request Process:**
+1. Read [docs/engineering-standards.md](docs/engineering-standards.md)
+2. Read [docs/architecture.md](docs/architecture.md) for large features
+3. Check existing issues and PRs to avoid duplicate work
 
-1.  **Fork the repo** and create your branch from `main`.
-2.  If you've added code that should be tested, **add unit tests or E2E tests**.
-3.  If you've changed APIs or CLI flags, **update the documentation**.
-4.  Ensure the test suite passes (`go test ./...`).
-5.  Format your code with `go fmt`.
-6.  Issue that pull request!
+#### Development Setup
 
-### Branch Naming Convention
+```bash
+# 1. Clone your fork
+git clone https://github.com/YOUR_USERNAME/devtether.git
+cd devtether
 
-If you plan to open a PR, please format your branch names intuitively:
+# 2. Install dependencies
+go mod tidy
 
-*   `feature/feature-name` (for new features)
-*   `fix/issue-description` (for bug fixes)
-*   `docs/doc-updates` (for documentation)
-*   `refactor/component-name` (for structural code changes)
+# 3. Run the daemon
+go run ./cmd/devtether up
 
-## Development Setup
+# 4. Verify everything works
+./scripts/test.sh
+```
 
-To get up and running:
+**Requirements:**
+- Go 1.25+ (see `go.mod` for exact version)
+- Unix-based OS (Linux or macOS) — see [ADR-006](docs/adr/006-platform-support-and-cgo-policy.md)
 
-1.  Ensure you have **Go 1.21+** installed.
-2.  Clone your fork: `git clone https://github.com/YOUR_USERNAME/devtether.git`
-3.  Navigate into the project: `cd devtether`
-4.  Install dependencies: `go mod tidy`
-5.  Run it: `go run ./cmd/devtether start`
+**Recommended tools** (CI uses these — install locally for faster feedback):
+- [`golangci-lint`](https://golangci-lint.run/welcome/install/) — linter suite
+- [`govulncheck`](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) — vulnerability scanner
 
-## Architecture Review
+#### Before You Push
 
-Before working on large features, it's highly recommended you read the `docs/architecture.md` file. DevTether is built around 4 independent engines (Static Routing, Orchestration, Tunneling, Access Control) that share a common DNS + Proxy infrastructure. Understanding how the Routing Engine interacts with the DNS Resolver ensures your PR aligns with the system design.
+```bash
+# Run the full local QA suite — mirrors CI exactly
+./scripts/test.sh
+```
 
-## Community
+**If `scripts/test.sh` passes locally, CI will pass.** This script runs:
 
-We are building DevTether to make local development networking frictionless. If you have questions, feel free to open a "Discussion" on GitHub. We welcome contributors from all backgrounds and experience levels!
+1. Module integrity verification (`go mod verify`)
+2. Module hygiene check (`go mod tidy` drift detection)
+3. Linting (`golangci-lint` if installed)
+4. `go vet`
+5. Security scanning (`govulncheck` if installed)
+6. Unit tests with race detection (`go test -race`)
+7. Cross-compilation check (macOS build)
+8. Binary build
+
+#### Pull Request Process
+
+1. **Fork the repo** and create your branch from `develop`
+2. **Write tests** — all new code must have tests, bug fixes must include regression tests
+3. **Update docs** if you changed CLI flags, behavior, or architecture
+4. **Run `scripts/test.sh`** and make sure it passes
+5. **Open the PR** with a descriptive title following Conventional Commits
+
+#### Branch Naming
+
+| Pattern | Use Case |
+|---|---|
+| `feature/feature-name` | New features |
+| `fix/issue-description` | Bug fixes |
+| `docs/doc-updates` | Documentation |
+| `refactor/component-name` | Structural changes |
+| `ci/pipeline-changes` | CI/CD changes |
+| `test/test-additions` | Test additions |
+
+#### Commit Messages
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <subject>
+
+<body>
+```
+
+| Type | When to Use |
+|---|---|
+| `feat` | New feature or command |
+| `fix` | Bug fix |
+| `ci` | CI/CD pipeline changes |
+| `docs` | Documentation only |
+| `test` | Adding or fixing tests |
+| `refactor` | Code change that neither fixes a bug nor adds a feature |
+| `chore` | Build system, dependency updates |
+
+#### PR Requirements
+
+- [ ] CI passes (all jobs: lint, security, test)
+- [ ] All new/changed code has tests
+- [ ] Bug fixes include regression tests
+- [ ] No unresolved lint warnings
+- [ ] Commit messages follow Conventional Commits
+- [ ] Documentation updated if CLI flags or behavior changed
+
+## Architecture
+
+Before working on large features, read [docs/architecture.md](docs/architecture.md).
+DevTether is built around modular engines (Static Routing, Orchestration,
+Tunneling, Access Control) that share common DNS + Proxy infrastructure.
+Understanding how the Routing Engine interacts with the DNS Resolver ensures
+your PR aligns with the system design.
+
+## Questions?
+
+Open a [Discussion](https://github.com/ivin-titus/devtether/discussions) on
+GitHub. We welcome contributors from all backgrounds and experience levels.

@@ -24,3 +24,9 @@ Each ADR follows this structure:
 3. **Context** — What problem or decision prompted this?
 4. **Decision** — What was decided?
 5. **Consequences** — What are the tradeoffs?
+
+## Related Documentation
+
+- [Architecture Overview](../architecture.md) — system design and package responsibilities
+- [Engineering Standards](../engineering-standards.md) — code quality rules for contributors
+
