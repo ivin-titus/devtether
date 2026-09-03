@@ -12,9 +12,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
 	"github.com/miekg/dns"
 )
@@ -22,7 +25,6 @@ import (
 // Server is an embedded DNS resolver that answers A record queries
 // for domains registered in the DevTether routing table.
 type Server struct {
-	server   *dns.Server
 	resolver router.Resolver
 	tlds     []string
 	bind     string
@@ -46,40 +48,64 @@ func NewServer(cfg config.DNSConfig, resolver router.Resolver) *Server {
 //  2. If EACCES/EADDRINUSE → 127.0.0.1:5353
 //  3. If 5353 also fails → returns error (DNS is non-fatal in up.go)
 func (s *Server) Start(ctx context.Context) error {
-	dns.HandleFunc(".", s.handleRequest)
+	// Use a dedicated mux instead of the global DefaultServeMux
+	// to avoid conflicts if multiple Server instances are created (e.g. in tests).
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", s.handleRequest)
 
 	// Shut down when context is cancelled.
+	// The server variable is local to avoid a data race between this
+	// goroutine (reading) and the main goroutine (writing during fallback).
 	shutdownStarted := make(chan struct{})
+	var (
+		serverMu sync.Mutex
+		server   *dns.Server
+	)
+
 	go func() {
 		<-ctx.Done()
 		close(shutdownStarted)
-		if s.server != nil {
-			s.server.Shutdown()
+		serverMu.Lock()
+		srv := server
+		serverMu.Unlock()
+		if srv != nil {
+			srv.Shutdown()
 		}
 	}()
 
 	// Try configured bind address.
-	s.server = &dns.Server{Addr: s.bind, Net: "udp"}
-	err := s.server.ListenAndServe()
+	serverMu.Lock()
+	server = &dns.Server{Addr: s.bind, Net: "udp", Handler: mux}
+	srv := server
+	serverMu.Unlock()
+	
+	err := srv.ListenAndServe()
 	if err == nil || isShutdown(shutdownStarted) {
 		return nil
 	}
 
 	// Fall back to 5353 on permission denied or address in use.
-	if !isRecoverableError(err) {
+	if !netutil.IsRecoverable(err) {
 		return fmt.Errorf("dns server failed: %w", err)
 	}
 
 	log.Printf("[dns] %s unavailable — falling back to 127.0.0.1:5353", s.bind)
-	if isPermissionError(err) {
-		log.Printf("[dns] to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
+	if netutil.IsPermissionError(err) {
+		if runtime.GOOS == "linux" {
+			log.Printf("[dns] to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
+		} else {
+			log.Printf("[dns] to use port 53, run devtether with administrator privileges")
+		}
 	}
 
 	s.bind = "127.0.0.1:5353"
-	s.server = &dns.Server{Addr: s.bind, Net: "udp"}
+	serverMu.Lock()
+	server = &dns.Server{Addr: s.bind, Net: "udp", Handler: mux}
+	srv = server
+	serverMu.Unlock()
 	log.Printf("[dns] listening on %s (tlds: %v)", s.bind, s.tlds)
 
-	err = s.server.ListenAndServe()
+	err = srv.ListenAndServe()
 	if err == nil || isShutdown(shutdownStarted) {
 		return nil
 	}
@@ -98,7 +124,7 @@ func isShutdown(ch <-chan struct{}) bool {
 
 // handleRequest processes incoming DNS queries. Only A record queries
 // for domains registered in the routing table under a configured TLD
-// receive a response. All other queries receive NXDOMAIN.
+// receive a response. All other queries receive NXDOMAIN (per ADR-002).
 func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(r)
@@ -110,6 +136,7 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	matched := false
 	for _, q := range m.Question {
 		if q.Qtype != dns.TypeA {
 			continue
@@ -131,7 +158,13 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 		rr, err := dns.NewRR(fmt.Sprintf("%s A 127.0.0.1", q.Name))
 		if err == nil {
 			m.Answer = append(m.Answer, rr)
+			matched = true
 		}
+	}
+
+	// Return NXDOMAIN for queries that matched no routes (ADR-002 contract).
+	if !matched && len(m.Answer) == 0 {
+		m.Rcode = dns.RcodeNameError
 	}
 
 	w.WriteMsg(m)
@@ -145,21 +178,4 @@ func (s *Server) matchesTLD(name string) bool {
 		}
 	}
 	return false
-}
-
-// isRecoverableError returns true for errors that should trigger a port fallback.
-func isRecoverableError(err error) bool {
-	return isPermissionError(err) || isAddrInUse(err)
-}
-
-// isPermissionError checks if a network error is caused by EACCES or EPERM.
-func isPermissionError(err error) bool {
-	errStr := err.Error()
-	return strings.Contains(errStr, "permission denied") ||
-		strings.Contains(errStr, "operation not permitted")
-}
-
-// isAddrInUse checks if a network error is caused by EADDRINUSE.
-func isAddrInUse(err error) bool {
-	return strings.Contains(err.Error(), "address already in use")
 }

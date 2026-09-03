@@ -36,12 +36,12 @@ func runUp(cmd *cobra.Command, args []string) {
 	log.Println("[devtether] starting...")
 
 	// 1. Load and validate configuration.
-	cfg, err := config.LoadConfig("devtether.yaml")
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		// errors.Is unwraps through fmt.Errorf %w chains.
 		// os.IsNotExist does NOT unwrap — never use it with wrapped errors.
 		if errors.Is(err, os.ErrNotExist) {
-			log.Fatal("[devtether] devtether.yaml not found. Create one with your routes:\n\n  routes:\n    myapp.localhost: 3000\n")
+			log.Fatalf("[devtether] %s not found. Create one with:\n\n  devtether init\n", configPath)
 		}
 		log.Fatalf("[devtether] config error: %v", err)
 	}

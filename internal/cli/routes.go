@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -33,10 +34,12 @@ func runRoutes(cmd *cobra.Command, args []string) {
 	}
 
 	// Daemon not running — fall back to reading config file.
-	cfg, err := config.LoadConfig("devtether.yaml")
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No devtether.yaml found and daemon is not running.")
+		// errors.Is unwraps through fmt.Errorf %w chains.
+		// os.IsNotExist does NOT unwrap — never use it with wrapped errors.
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("No %s found and daemon is not running.\n", configPath)
 			return
 		}
 		log.Fatalf("config error: %v", err)

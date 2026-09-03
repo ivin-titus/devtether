@@ -1,5 +1,5 @@
 # Binaries
-devtether
+/devtether
 *.test
 
 # Editor/IDE
