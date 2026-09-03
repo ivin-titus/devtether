@@ -46,8 +46,8 @@ The script auto-detects your OS and architecture, downloads the latest release, 
 Download the latest release for your platform from [GitHub Releases](https://github.com/ivin-titus/devtether/releases):
 
 ```bash
-# Example for Linux amd64
-tar -xzf devtether_Linux_x86_64.tar.gz
+# Example for Linux amd64 (replace version with latest)
+tar -xzf devtether_2.0.0-beta.2_linux_amd64.tar.gz
 chmod +x devtether
 sudo mv devtether /usr/local/bin/
 ```
@@ -102,10 +102,11 @@ See [examples/](examples/) for more configuration patterns, including proxy time
 ### Commands
 
 ```bash
-devtether up          # Start the routing daemon
-devtether routes      # Show active routes (live from daemon, or from config)
-devtether init        # Create a starter devtether.yaml
-devtether version     # Print version, commit, and build date
+devtether up                        # Start the routing daemon
+devtether up -c /path/to/config     # Use a specific config file
+devtether routes                    # Show active routes (live from daemon, or from config)
+devtether init                      # Create a starter devtether.yaml
+devtether version                   # Print version, commit, and build date
 ```
 
 ## Platform Support
@@ -137,7 +138,13 @@ DevTether is built as **4 independent engines** inside a single binary:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming conventions, workflow architecture, and testing guidelines. Code behavior policies are found in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+We welcome contributions! Before submitting a PR:
+
+1. Read our [Engineering Standards](docs/engineering-standards.md) — the code quality bar for all contributions
+2. Follow the [Contributing Guide](CONTRIBUTING.md) — setup, workflow, and PR checklist
+3. Run `./scripts/test.sh` before pushing — if it passes locally, CI will pass
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community behavior policies.
 
 ## License
 
