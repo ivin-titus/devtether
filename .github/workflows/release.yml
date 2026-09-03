@@ -10,7 +10,12 @@ permissions:
   id-token: write # Required for Sigstore/Cosign keyless signing
 
 jobs:
+  qa:
+    name: Enforce Quality Checks
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: qa
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -60,7 +60,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("daemon: failed to clear old socket: %w", err)
 	}
 
-	listener, err := net.Listen("unix", s.socketPath)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "unix", s.socketPath)
 	if err != nil {
 		return fmt.Errorf("daemon: failed to bind unix socket: %w", err)
 	}
@@ -73,15 +74,19 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/routes", s.handleRoutes)
 
-	s.httpServer = &http.Server{Handler: mux}
+	s.httpServer = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 
 	// Graceful shutdown when context is cancelled.
+	//nolint:gosec // Background server goroutine does not need request context
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		s.httpServer.Shutdown(shutdownCtx)
-		os.Remove(s.socketPath)
+		_ = s.httpServer.Shutdown(shutdownCtx)
+		_ = os.Remove(s.socketPath)
 	}()
 
 	log.Printf("[daemon] ipc listening on %s", s.socketPath)

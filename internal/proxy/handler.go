@@ -47,20 +47,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target.URL)
-
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Header.Set("X-Forwarded-Host", host)
-		req.Header.Set("X-Forwarded-Proto", "http")
-		if clientIP := r.RemoteAddr; clientIP != "" {
-			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
-				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
-			} else {
-				req.Header.Set("X-Forwarded-For", clientIP)
-			}
-		}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target.URL)
+			pr.SetXForwarded()
+			// Override X-Forwarded-Host to use our sanitized host string,
+			// maintaining parity with the old logic.
+			pr.Out.Header.Set("X-Forwarded-Host", host)
+		},
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
@@ -81,6 +75,7 @@ func (h *Handler) logErrorThrottled(host, targetURL string, err error) {
 		}
 	}
 	h.errorLog.Store(targetURL, now)
+	//nolint:gosec // Input is sanitized via sanitizeHost
 	log.Printf("[proxy] %s → %s: %v", host, targetURL, err)
 }
 

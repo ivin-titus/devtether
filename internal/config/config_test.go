@@ -167,6 +167,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "devtether.yaml")
+			//nolint:gosec // Config files use 0644 per engineering standards
 			if err := os.WriteFile(configPath, []byte(tt.yaml), 0644); err != nil {
 				t.Fatalf("failed to write test config: %v", err)
 			}

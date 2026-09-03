@@ -40,7 +40,7 @@ func TestEngine_ResolveNotFound(t *testing.T) {
 
 func TestEngine_RemoveRoute(t *testing.T) {
 	e := NewEngine()
-	e.AddRoute("api.localhost", "api", 8080, RouteStatic)
+	_ = e.AddRoute("api.localhost", "api", 8080, RouteStatic)
 	e.RemoveRoute("api.localhost")
 
 	if target := e.Resolve("api.localhost"); target != nil {
@@ -50,9 +50,9 @@ func TestEngine_RemoveRoute(t *testing.T) {
 
 func TestEngine_Domains(t *testing.T) {
 	e := NewEngine()
-	e.AddRoute("a.localhost", "a", 3000, RouteStatic)
-	e.AddRoute("b.localhost", "b", 4000, RouteStatic)
-	e.AddRoute("c.localhost", "c", 5000, RouteOrchestrated)
+	_ = e.AddRoute("a.localhost", "a", 3000, RouteStatic)
+	_ = e.AddRoute("b.localhost", "b", 4000, RouteStatic)
+	_ = e.AddRoute("c.localhost", "c", 5000, RouteOrchestrated)
 
 	domains := e.Domains()
 	sort.Strings(domains)
@@ -70,8 +70,8 @@ func TestEngine_Domains(t *testing.T) {
 
 func TestEngine_GetAllRoutes(t *testing.T) {
 	e := NewEngine()
-	e.AddRoute("a.localhost", "a", 3000, RouteStatic)
-	e.AddRoute("b.localhost", "b", 4000, RouteStatic)
+	_ = e.AddRoute("a.localhost", "a", 3000, RouteStatic)
+	_ = e.AddRoute("b.localhost", "b", 4000, RouteStatic)
 
 	snapshot := e.GetAllRoutes()
 	if len(snapshot) != 2 {
@@ -87,7 +87,7 @@ func TestEngine_GetAllRoutes(t *testing.T) {
 
 func TestEngine_Concurrency(t *testing.T) {
 	e := NewEngine()
-	e.AddRoute("api.localhost", "api", 8080, RouteStatic)
+	_ = e.AddRoute("api.localhost", "api", 8080, RouteStatic)
 
 	done := make(chan bool, 2)
 
@@ -100,7 +100,7 @@ func TestEngine_Concurrency(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 1000; i++ {
-			e.AddRoute("web.localhost", "web", 8081+i, RouteStatic)
+			_ = e.AddRoute("web.localhost", "web", 8081+i, RouteStatic)
 		}
 		done <- true
 	}()

@@ -38,6 +38,7 @@ func runInit(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	//nolint:gosec // Config files use 0644 per engineering standards
 	if err := os.WriteFile(target, []byte(defaultConfig), 0644); err != nil {
 		log.Fatalf("[init] failed to create %s: %v", target, err)
 	}
