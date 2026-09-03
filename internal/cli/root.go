@@ -23,7 +23,7 @@ named domains — all from a single Go binary.
 
 Documentation: https://github.com/ivin-titus/devtether`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 	// Cobra's default behavior prints errors to stderr and returns them.
 	// With SilenceErrors=true, errors are only returned — main.go handles

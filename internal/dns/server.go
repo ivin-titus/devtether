@@ -69,7 +69,7 @@ func (s *Server) Start(ctx context.Context) error {
 		srv := server
 		serverMu.Unlock()
 		if srv != nil {
-			srv.Shutdown()
+			_ = srv.Shutdown()
 		}
 	}()
 
@@ -132,7 +132,7 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m.Authoritative = true
 
 	if r.Opcode != dns.OpcodeQuery {
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 		return
 	}
 
@@ -167,7 +167,7 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 		m.Rcode = dns.RcodeNameError
 	}
 
-	w.WriteMsg(m)
+	_ = w.WriteMsg(m)
 }
 
 // matchesTLD checks if the given hostname ends with one of the configured TLDs.

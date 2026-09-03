@@ -16,7 +16,7 @@ import (
 // Regression test for bug C2: previously returned NOERROR with empty answers.
 func TestNXDOMAIN(t *testing.T) {
 	engine := router.NewEngine()
-	engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
+	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
 	srv, addr := startTestServer(t, engine, []string{"localhost"})
 	_ = srv
@@ -79,10 +79,10 @@ func TestNXDOMAIN(t *testing.T) {
 // global DefaultServeMux (bug C3). Two servers must coexist without conflicts.
 func TestDedicatedMux(t *testing.T) {
 	engine1 := router.NewEngine()
-	engine1.AddRoute("app1.localhost", "app1", 3001, router.RouteStatic)
+	_ = engine1.AddRoute("app1.localhost", "app1", 3001, router.RouteStatic)
 
 	engine2 := router.NewEngine()
-	engine2.AddRoute("app2.localhost", "app2", 3002, router.RouteStatic)
+	_ = engine2.AddRoute("app2.localhost", "app2", 3002, router.RouteStatic)
 
 	_, addr1 := startTestServer(t, engine1, []string{"localhost"})
 	_, addr2 := startTestServer(t, engine2, []string{"localhost"})
@@ -129,7 +129,7 @@ func TestDedicatedMux(t *testing.T) {
 // Run with -race to confirm.
 func TestConcurrentStartShutdown(t *testing.T) {
 	engine := router.NewEngine()
-	engine.AddRoute("test.localhost", "test", 8080, router.RouteStatic)
+	_ = engine.AddRoute("test.localhost", "test", 8080, router.RouteStatic)
 
 	cfg := config.DNSConfig{
 		TLD:  []string{"localhost"},
@@ -206,12 +206,13 @@ func startTestServer(t *testing.T, engine *router.Engine, tlds []string) (*Serve
 // ephemeral port. The port is freed before returning so the DNS server can bind it.
 func ephemeralAddr(t *testing.T) string {
 	t.Helper()
+	//nolint:noctx // Test listener does not require context cancellation
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to get ephemeral port: %v", err)
 	}
 	addr := conn.LocalAddr().String()
-	conn.Close()
+	_ = conn.Close()
 	return addr
 }
 
@@ -270,7 +271,7 @@ func TestHandleRequestNonQuery(t *testing.T) {
 // TestNonARecordQuery verifies that non-A queries (e.g. AAAA, MX) get NXDOMAIN.
 func TestNonARecordQuery(t *testing.T) {
 	engine := router.NewEngine()
-	engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
+	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
 	_, addr := startTestServer(t, engine, []string{"localhost"})
 
@@ -298,7 +299,7 @@ func TestNonARecordQuery(t *testing.T) {
 
 func TestCaseSensitivity(t *testing.T) {
 	engine := router.NewEngine()
-	engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
+	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
 	_, addr := startTestServer(t, engine, []string{"localhost"})
 

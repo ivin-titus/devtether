@@ -70,10 +70,10 @@ func printRoutes(routes []daemon.RouteResponse) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "DOMAIN\tPORT\tTYPE")
-	fmt.Fprintln(w, "------\t----\t----")
+	_, _ = fmt.Fprintln(w, "DOMAIN\tPORT\tTYPE")
+	_, _ = fmt.Fprintln(w, "------\t----\t----")
 	for _, r := range routes {
-		fmt.Fprintf(w, "%s\t%d\t%s\n", r.Domain, r.Port, r.Type)
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", r.Domain, r.Port, r.Type)
 	}
-	w.Flush()
+	_ = w.Flush()
 }

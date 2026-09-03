@@ -9,6 +9,8 @@
 
 set -eu
 
+# Prioritize local binaries (like golangci-lint, govulncheck) if they were installed to ./bin
+export PATH="$PWD/bin:$PATH"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'

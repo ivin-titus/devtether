@@ -9,6 +9,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -93,7 +94,7 @@ const DefaultIdleTimeout = 120 * time.Second
 // Config struct, applies defaults for missing fields, and validates
 // all populated sections.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -121,9 +122,7 @@ func LoadConfig(path string) (*Config, error) {
 // and returns a helpful migration error.
 func detectLegacySchema(data []byte) error {
 	var legacy legacyConfig
-	if err := yaml.Unmarshal(data, &legacy); err != nil {
-		return nil // Let the real parser handle malformed YAML.
-	}
+	_ = yaml.Unmarshal(data, &legacy) // Let the real parser handle malformed YAML.
 	if len(legacy.Services) > 0 {
 		return fmt.Errorf(
 			"devtether.yaml uses the legacy 'services:' format which is no longer supported.\n" +
