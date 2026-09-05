@@ -141,7 +141,12 @@ func TestConcurrentStartShutdown(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Start(ctx)
+		pc, err := srv.Listen(ctx)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- srv.Serve(ctx, pc)
 	}()
 
 	// Give the server time to bind, then immediately cancel.
@@ -175,7 +180,12 @@ func startTestServer(t *testing.T, engine *router.Engine, tlds []string) (*Serve
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.Start(ctx)
+		pc, err := srv.Listen(ctx)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- srv.Serve(ctx, pc)
 	}()
 
 	// Wait for the server to be ready by polling.

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -17,7 +16,7 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Create a starter devtether.yaml in the current directory",
 	Long:  `Creates a devtether.yaml with commented example routes. Refuses to overwrite an existing file unless --force is passed.`,
-	Run:   runInit,
+	RunE:  runInit,
 }
 
 const defaultConfig = `# DevTether Configuration
@@ -29,21 +28,21 @@ routes:
   # api.localhost: 8080
 `
 
-func runInit(cmd *cobra.Command, args []string) {
+func runInit(cmd *cobra.Command, args []string) error {
 	target := configPath
 	force, _ := cmd.Flags().GetBool("force")
 
 	if _, err := os.Stat(target); err == nil && !force {
-		fmt.Printf("%s already exists. Use --force to overwrite.\n", target)
-		return
+		return fmt.Errorf("%s already exists. Use --force to overwrite", target)
 	}
 
 	//nolint:gosec // Config files use 0644 per engineering standards
 	if err := os.WriteFile(target, []byte(defaultConfig), 0644); err != nil {
-		log.Fatalf("[init] failed to create %s: %v", target, err)
+		return fmt.Errorf("failed to create %s: %w", target, err)
 	}
 
 	fmt.Printf("Created %s\n\nNext steps:\n", target)
 	fmt.Println("  1. Edit the file and add your routes")
 	fmt.Println("  2. Run: devtether up")
+	return nil
 }

@@ -1,13 +1,14 @@
 package proxy
 
 import (
-	"log"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
@@ -17,18 +18,71 @@ import (
 type Handler struct {
 	resolver router.Resolver
 
+	// rp is the shared reverse proxy engine.
+	rp *httputil.ReverseProxy
+
 	// errorLog tracks recently logged backend errors to prevent log spam.
 	// Key: target URL string, Value: last time the error was logged.
-	errorLog   sync.Map
+	errorLog      sync.Map
 	errorCooldown time.Duration
 }
 
 // NewHandler creates a proxy handler with the given resolver.
 func NewHandler(resolver router.Resolver) *Handler {
-	return &Handler{
+	h := &Handler{
 		resolver:      resolver,
 		errorCooldown: 10 * time.Second,
 	}
+
+	h.rp = &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			host := sanitizeHost(pr.In.Host)
+			target := h.resolver.Resolve(host)
+			if target != nil {
+				pr.SetURL(target.URL)
+				pr.SetXForwarded()
+				// Override X-Forwarded-Host to use our sanitized host string
+				pr.Out.Header.Set("X-Forwarded-Host", host)
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			host := sanitizeHost(req.Host)
+			target := h.resolver.Resolve(host)
+
+			var targetURL string
+			var port int
+			if target != nil {
+				targetURL = target.URL.String()
+				port = target.Port
+			}
+			if port == 0 {
+				port = 80 // Fallback generic assumption
+			}
+
+			h.logErrorThrottled(host, targetURL, err)
+
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadGateway)
+
+			trace := ""
+			if logger.IsVerbose() {
+				trace = err.Error()
+			}
+
+			data := ErrorPageData{
+				Host:       host,
+				Target:     targetURL,
+				TargetPort: fmt.Sprintf("%d", port),
+				ErrorTrace: trace,
+			}
+
+			if err := errorPageTemplate.Execute(w, data); err != nil {
+				logger.New("proxy").Error("failed to render error page", err)
+			}
+		},
+	}
+
+	return h
 }
 
 // ServeHTTP routes incoming HTTP requests to the correct backend
@@ -47,22 +101,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target.URL)
-			pr.SetXForwarded()
-			// Override X-Forwarded-Host to use our sanitized host string,
-			// maintaining parity with the old logic.
-			pr.Out.Header.Set("X-Forwarded-Host", host)
-		},
-	}
-
-	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
-		h.logErrorThrottled(host, target.URL.String(), err)
-		http.Error(w, "devtether: bad gateway (backend may be down or starting)", http.StatusBadGateway)
-	}
-
-	proxy.ServeHTTP(w, r)
+	h.rp.ServeHTTP(w, r)
 }
 
 // logErrorThrottled logs a proxy error at most once per cooldown period
@@ -75,8 +114,7 @@ func (h *Handler) logErrorThrottled(host, targetURL string, err error) {
 		}
 	}
 	h.errorLog.Store(targetURL, now)
-	//nolint:gosec // Input is sanitized via sanitizeHost
-	log.Printf("[proxy] %s → %s: %v", host, targetURL, err)
+	logger.New("proxy").Debug(fmt.Sprintf("%s → %s", host, targetURL), "error", err)
 }
 
 // sanitizeHost strips the port suffix from a Host header value and

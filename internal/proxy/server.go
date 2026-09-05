@@ -6,12 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
 )
@@ -35,7 +35,7 @@ func NewServer(cfg config.ProxyConfig, resolver router.Resolver) *Server {
 
 	return &Server{
 		httpServer: &http.Server{
-			Handler:      handler,
+			Handler:      LoggingMiddleware(handler),
 			ReadTimeout:  readTimeout,
 			WriteTimeout: writeTimeout,
 			IdleTimeout:  idleTimeout,
@@ -45,20 +45,18 @@ func NewServer(cfg config.ProxyConfig, resolver router.Resolver) *Server {
 	}
 }
 
-// Start binds the proxy to the configured port and begins serving.
-//
+// Listen binds the proxy to the configured port and returns the listener and bound address.
 // Port resolution order:
 //  1. Configured port (default: 80)
 //  2. If EACCES/EPERM → fallback port (8080)
 //  3. If fallback is also in use → OS-assigned port (port 0)
-//
-// It blocks until the context is cancelled.
-func (s *Server) Start(ctx context.Context) error {
-	listener, addr, err := s.bind(ctx)
-	if err != nil {
-		return err
-	}
+func (s *Server) Listen(ctx context.Context) (net.Listener, string, error) {
+	return s.bind(ctx)
+}
 
+// Serve begins serving on the provided listener.
+// It blocks until the context is cancelled.
+func (s *Server) Serve(ctx context.Context, listener net.Listener, addr string) error {
 	// Graceful shutdown when context is cancelled.
 	//nolint:gosec // Background server goroutine does not need request context
 	go func() {
@@ -66,11 +64,11 @@ func (s *Server) Start(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("[proxy] shutdown error: %v", err)
+			logger.New("proxy").Error("shutdown error", err)
 		}
 	}()
 
-	log.Printf("[proxy] listening on %s", addr)
+	logger.New("proxy").Debug(fmt.Sprintf("listening on %s", addr))
 	if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("proxy: server error: %w", err)
 	}
@@ -91,9 +89,9 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 	}
 
 	if netutil.IsPermissionError(err) {
-		log.Printf("[proxy] permission denied on port %d — trying port %d", s.port, s.fallback)
+		logger.New("proxy").Debug(fmt.Sprintf("permission denied on port %d — trying port %d", s.port, s.fallback))
 	} else if netutil.IsAddrInUse(err) {
-		log.Printf("[proxy] port %d already in use — trying port %d", s.port, s.fallback)
+		logger.New("proxy").Debug(fmt.Sprintf("port %d already in use — trying port %d", s.port, s.fallback))
 	} else {
 		return nil, "", fmt.Errorf("proxy: failed to bind to port %d: %w", s.port, err)
 	}
@@ -106,7 +104,7 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 	}
 
 	if netutil.IsRecoverable(err) {
-		log.Printf("[proxy] port %d also unavailable — binding to OS-assigned port", s.fallback)
+		logger.New("proxy").Info(fmt.Sprintf("port %d also unavailable — binding to OS-assigned port", s.fallback))
 	} else {
 		return nil, "", fmt.Errorf("proxy: failed to bind to fallback port %d: %w", s.fallback, err)
 	}

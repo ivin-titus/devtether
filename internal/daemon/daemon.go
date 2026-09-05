@@ -13,13 +13,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
@@ -56,8 +56,20 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Clean up dead socket from a previous run.
-	if err := os.Remove(s.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("daemon: failed to clear old socket: %w", err)
+	if _, statErr := os.Stat(s.socketPath); statErr == nil {
+		// Socket file exists. Check if it's stale.
+		dialer := net.Dialer{Timeout: 1 * time.Second}
+		conn, dialErr := dialer.DialContext(ctx, "unix", s.socketPath)
+		if dialErr == nil {
+			_ = conn.Close()
+			return fmt.Errorf("daemon: already running on %s", s.socketPath)
+		}
+		// Connection failed, assume stale socket and remove it.
+		if rmErr := os.Remove(s.socketPath); rmErr != nil {
+			return fmt.Errorf("daemon: failed to clear stale socket: %w", rmErr)
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("daemon: failed to stat socket: %w", statErr)
 	}
 
 	var lc net.ListenConfig
@@ -68,7 +80,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Set restrictive permissions: owner-only read/write.
 	if err := os.Chmod(s.socketPath, 0600); err != nil {
-		log.Printf("[daemon] warning: failed to chmod socket: %v", err)
+		logger.New("daemon").Error("failed to chmod socket", err)
 	}
 
 	mux := http.NewServeMux()
@@ -89,7 +101,7 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = os.Remove(s.socketPath)
 	}()
 
-	log.Printf("[daemon] ipc listening on %s", s.socketPath)
+	logger.New("daemon").Debug(fmt.Sprintf("ipc listening on %s", s.socketPath))
 	if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("daemon: server error: %w", err)
 	}

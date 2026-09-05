@@ -3,15 +3,19 @@ package cli
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"runtime"
+	"sort"
 	"syscall"
 	"time"
 
 	"github.com/ivin-titus/devtether/internal/config"
 	"github.com/ivin-titus/devtether/internal/daemon"
 	"github.com/ivin-titus/devtether/internal/dns"
+	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/proxy"
 	"github.com/ivin-titus/devtether/internal/router"
 	"github.com/spf13/cobra"
@@ -28,37 +32,37 @@ var upCmd = &cobra.Command{
 	Short:   "Start the DevTether routing daemon",
 	Long: `Loads devtether.yaml, registers static routes, and starts the DNS resolver,
 reverse proxy, and IPC daemon. Press Ctrl+C for graceful shutdown.`,
-	Run: runUp,
+	RunE: runUp,
 }
 
-func runUp(cmd *cobra.Command, args []string) {
-	log.SetFlags(log.Ldate | log.Ltime)
-	log.Println("[devtether] starting...")
+func runUp(cmd *cobra.Command, args []string) error {
+	logger.Setup(verbose)
+	log := logger.New("devtether")
+	log.Debug("starting...")
 
 	// 1. Load and validate configuration.
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		// errors.Is unwraps through fmt.Errorf %w chains.
-		// os.IsNotExist does NOT unwrap — never use it with wrapped errors.
 		if errors.Is(err, os.ErrNotExist) {
-			log.Fatalf("[devtether] %s not found. Create one with:\n\n  devtether init\n", configPath)
+			return fmt.Errorf("%s not found. Create one with:\n\n  devtether init", configPath)
 		}
-		log.Fatalf("[devtether] config error: %v", err)
+		return fmt.Errorf("config error: %w", err)
 	}
 
 	// 2. Initialize the routing engine.
 	engine := router.NewEngine()
 
 	// 3. Populate static routes (Engine 1).
+	routeLog := logger.New("route")
 	for domain, port := range cfg.Routes {
-		if err := engine.AddRoute(domain, "static", port, router.RouteStatic); err != nil {
-			log.Fatalf("[route] failed to register %s: %v", domain, err)
+		if addErr := engine.AddRoute(domain, "static", port, router.RouteStatic); addErr != nil {
+			return fmt.Errorf("failed to register route %s: %w", domain, addErr)
 		}
-		log.Printf("[route] %s → 127.0.0.1:%d", domain, port)
+		routeLog.Debug(fmt.Sprintf("%s → 127.0.0.1:%d", domain, port))
 	}
 
 	if len(cfg.Routes) == 0 {
-		log.Println("[devtether] no routes defined in devtether.yaml — daemon will start with an empty routing table")
+		log.Debug("no routes defined in devtether.yaml")
 	}
 
 	// 4. Create servers.
@@ -70,50 +74,183 @@ func runUp(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// --- DYNAMIC UI: STARTING ---
+	v := buildVersion
+	if v == "" {
+		v = "dev"
+	}
+	fmt.Printf("\n  DevTether \033[90m%s\033[0m\n\n", v)
+	fmt.Printf("  \033[90mStarting...\033[0m\r")
+
+	// 6. Synchronous Binds (DNS & Proxy).
+	// We bind before starting goroutines to flush any fallback logs
+	// *before* the UI prints its dynamic summary.
+	dnsConn, err := dnsServer.Listen(ctx)
+	if err != nil {
+		dnsLog := logger.New("dns")
+		dnsLog.Debug("failed to bind", "error", err)
+		dnsLog.Debug("the proxy will still work — configure DNS manually or use /etc/hosts")
+	}
+
+	proxyListener, proxyAddr, err := proxyServer.Listen(ctx)
+	if err != nil {
+		if dnsConn != nil {
+			_ = dnsConn.Close()
+		}
+		return fmt.Errorf("fatal proxy bind error: %w", err)
+	}
+
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// DNS engine — non-fatal. If DNS can't bind, the proxy still works
-	// with /etc/hosts or systemd-resolved.
-	g.Go(func() error {
-		if err := dnsServer.Start(gCtx); err != nil {
-			log.Printf("[dns] failed to start: %v", err)
-			log.Printf("[dns] the proxy will still work — configure DNS manually or use /etc/hosts")
-		}
-		return nil
-	})
+	// DNS engine (Serving on bound packet connection) — non-fatal.
+	if dnsConn != nil {
+		g.Go(func() error {
+			return dnsServer.Serve(gCtx, dnsConn)
+		})
+	}
 
 	// IPC daemon.
 	g.Go(func() error {
 		return ipcDaemon.Start(gCtx)
 	})
 
-	// Reverse proxy.
+	// Reverse proxy (Serving on bound listener).
 	g.Go(func() error {
-		return proxyServer.Start(gCtx)
+		return proxyServer.Serve(gCtx, proxyListener, proxyAddr)
 	})
 
-	// Signal handler — the hard deadline timer only starts AFTER
-	// a signal is received, not when the daemon boots.
+	// Signal handler.
 	g.Go(func() error {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 		select {
 		case sig := <-sigCh:
-			log.Printf("[devtether] received %v, shutting down...", sig)
+			log.Info(fmt.Sprintf("received %v, shutting down...", sig))
 			cancel()
 			// Hard deadline: force exit if graceful shutdown hangs.
 			time.AfterFunc(5*time.Second, func() {
-				log.Fatal("[devtether] shutdown timed out — force exiting")
+				fmt.Fprintln(os.Stderr, "[devtether] shutdown timed out — force exiting")
+				os.Exit(1)
 			})
 		case <-gCtx.Done():
 		}
 		return nil
 	})
 
-	// 6. Block until all goroutines finish.
+	printStartupSummary(gCtx, cfg, proxyAddr)
+
+	// 7. Block until all goroutines finish.
 	if err := g.Wait(); err != nil {
-		log.Fatalf("[devtether] fatal: %v", err)
+		return fmt.Errorf("fatal daemon error: %w", err)
 	}
 
-	log.Println("[devtether] stopped")
+	log.Debug("stopped")
+	return nil
+}
+
+// net.DialTimeout wrapper for health check testing
+func isBackendOnline(ctx context.Context, port int) bool {
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, "tcp", target)
+	if err == nil {
+		_ = conn.Close()
+		return true
+	}
+	return false
+}
+
+func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr string) {
+	// --- DYNAMIC UI: STARTED ---
+	fmt.Printf("  \033[92mStarted\033[0m    \n")
+
+	if len(cfg.Routes) == 0 {
+		fmt.Println("\n  \033[33m○ No routes defined in devtether.yaml\033[0m")
+		fmt.Println("    Create one with: devtether init")
+		fmt.Println()
+		return
+	}
+
+	// Determine proxy port logic for URLs and Fallback warnings
+	_, proxyPort, _ := net.SplitHostPort(proxyAddr)
+	if proxyPort != "80" {
+		if runtime.GOOS == "linux" {
+			fmt.Printf("  \033[90m> Note: devtether fell back to port %s due to lack of root access or missing setcap settings.\033[0m\n", proxyPort)
+		} else {
+			fmt.Printf("  \033[90m> Note: devtether fell back to port %s due to lack of administrative privileges.\033[0m\n", proxyPort)
+		}
+	}
+	fmt.Println()
+	fmt.Println("Tethered Routes:")
+
+	domains := make([]string, 0, len(cfg.Routes))
+	maxDomainLen := 0
+	maxUrlLen := 0
+
+	for domain := range cfg.Routes {
+		domains = append(domains, domain)
+		if len(domain) > maxDomainLen {
+			maxDomainLen = len(domain)
+		}
+		urlLen := len("http://" + domain)
+		if proxyPort != "80" {
+			urlLen += len(":" + proxyPort)
+		}
+		if urlLen > maxUrlLen {
+			maxUrlLen = urlLen
+		}
+	}
+	sort.Strings(domains)
+
+	// Use int for status: 0=unknown, 1=online, 2=offline
+	status := make(map[string]int)
+
+	// Print the static routes table once
+	for _, domain := range domains {
+		port := cfg.Routes[domain]
+		url := fmt.Sprintf("http://%s", domain)
+		if proxyPort != "80" {
+			url = fmt.Sprintf("http://%s:%s", domain, proxyPort)
+		}
+		fmt.Printf("  %-*s  %-*s  \033[90m→ :%d\033[0m\n", maxDomainLen, domain, maxUrlLen, url, port)
+	}
+	fmt.Println()
+
+	// Launch realtime health checker
+	go func() {
+		// Initial check runs immediately
+		ticker := time.NewTicker(1500 * time.Millisecond)
+		defer ticker.Stop()
+		routeLog := logger.New("route")
+
+		check := func() {
+			for _, domain := range domains {
+				port := cfg.Routes[domain]
+				online := isBackendOnline(ctx, port)
+				newState := 2 // offline
+				if online {
+					newState = 1 // online
+				}
+
+				if newState != status[domain] {
+					status[domain] = newState
+					if online {
+						routeLog.Info(fmt.Sprintf("● %s is online", domain))
+					} else {
+						routeLog.Info(fmt.Sprintf("○ %s is offline", domain))
+					}
+				}
+			}
+		}
+
+		check() // First immediate check
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				check()
+			}
+		}
+	}()
 }

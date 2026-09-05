@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"text/tabwriter"
 
@@ -21,16 +20,16 @@ var routesCmd = &cobra.Command{
 	Short: "Show all configured or active routes",
 	Long: `If the DevTether daemon is running, fetches live routes from it.
 Otherwise, reads routes directly from devtether.yaml.`,
-	Run: runRoutes,
+	RunE: runRoutes,
 }
 
-func runRoutes(cmd *cobra.Command, args []string) {
+func runRoutes(cmd *cobra.Command, args []string) error {
 	// Try the daemon first.
 	client := daemon.NewClient()
 	routes, err := client.ListRoutes()
 	if err == nil {
 		printRoutes(routes)
-		return
+		return nil
 	}
 
 	// Daemon not running — fall back to reading config file.
@@ -40,14 +39,14 @@ func runRoutes(cmd *cobra.Command, args []string) {
 		// os.IsNotExist does NOT unwrap — never use it with wrapped errors.
 		if errors.Is(err, os.ErrNotExist) {
 			fmt.Printf("No %s found and daemon is not running.\n", configPath)
-			return
+			return nil
 		}
-		log.Fatalf("config error: %v", err)
+		return fmt.Errorf("config error: %w", err)
 	}
 
 	if len(cfg.Routes) == 0 {
 		fmt.Println("No routes defined in devtether.yaml.")
-		return
+		return nil
 	}
 
 	// Convert config routes to the same format.
@@ -61,6 +60,7 @@ func runRoutes(cmd *cobra.Command, args []string) {
 		})
 	}
 	printRoutes(configRoutes)
+	return nil
 }
 
 func printRoutes(routes []daemon.RouteResponse) {

@@ -11,12 +11,13 @@ package dns
 import (
 	"context"
 	"fmt"
-	"log"
+	"net"
 	"runtime"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
 	"github.com/miekg/dns"
@@ -40,76 +41,66 @@ func NewServer(cfg config.DNSConfig, resolver router.Resolver) *Server {
 	}
 }
 
-// Start begins listening for DNS queries. It blocks until the context
-// is cancelled or a fatal error occurs.
-//
+// Listen binds the DNS server to the configured port (with fallback) and returns the packet connection.
 // Port resolution order:
 //  1. Configured bind address (default: 127.0.0.1:53)
 //  2. If EACCES/EADDRINUSE → 127.0.0.1:5353
-//  3. If 5353 also fails → returns error (DNS is non-fatal in up.go)
-func (s *Server) Start(ctx context.Context) error {
-	// Use a dedicated mux instead of the global DefaultServeMux
-	// to avoid conflicts if multiple Server instances are created (e.g. in tests).
-	mux := dns.NewServeMux()
-	mux.HandleFunc(".", s.handleRequest)
-
-	// Shut down when context is cancelled.
-	// The server variable is local to avoid a data race between this
-	// goroutine (reading) and the main goroutine (writing during fallback).
-	shutdownStarted := make(chan struct{})
-	var (
-		serverMu sync.Mutex
-		server   *dns.Server
-	)
-
-	go func() {
-		<-ctx.Done()
-		close(shutdownStarted)
-		serverMu.Lock()
-		srv := server
-		serverMu.Unlock()
-		if srv != nil {
-			_ = srv.Shutdown()
-		}
-	}()
-
-	// Try configured bind address.
-	serverMu.Lock()
-	server = &dns.Server{Addr: s.bind, Net: "udp", Handler: mux}
-	srv := server
-	serverMu.Unlock()
-	
-	err := srv.ListenAndServe()
-	if err == nil || isShutdown(shutdownStarted) {
-		return nil
+//  3. If 5353 also fails → returns error
+func (s *Server) Listen(ctx context.Context) (net.PacketConn, error) {
+	var lc net.ListenConfig
+	pc, err := lc.ListenPacket(ctx, "udp", s.bind)
+	if err == nil {
+		return pc, nil
 	}
 
 	// Fall back to 5353 on permission denied or address in use.
 	if !netutil.IsRecoverable(err) {
-		return fmt.Errorf("dns server failed: %w", err)
+		return nil, fmt.Errorf("dns server failed: %w", err)
 	}
 
-	log.Printf("[dns] %s unavailable — falling back to 127.0.0.1:5353", s.bind)
+	log := logger.New("dns")
+	log.Debug(fmt.Sprintf("%s unavailable — falling back to 127.0.0.1:5353", s.bind))
 	if netutil.IsPermissionError(err) {
 		if runtime.GOOS == "linux" {
-			log.Printf("[dns] to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
+			log.Debug("to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
 		} else {
-			log.Printf("[dns] to use port 53, run devtether with administrator privileges")
+			log.Debug("to use port 53, run devtether with administrator privileges")
 		}
 	}
 
 	s.bind = "127.0.0.1:5353"
-	serverMu.Lock()
-	server = &dns.Server{Addr: s.bind, Net: "udp", Handler: mux}
-	srv = server
-	serverMu.Unlock()
-	log.Printf("[dns] listening on %s (tlds: %v)", s.bind, s.tlds)
+	pc, err = lc.ListenPacket(ctx, "udp", s.bind)
+	if err == nil {
+		return pc, nil
+	}
+	return nil, fmt.Errorf("dns server failed on fallback port: %w", err)
+}
 
-	err = srv.ListenAndServe()
+// Serve begins handling DNS queries on the provided PacketConn.
+// It blocks until the context is cancelled.
+func (s *Server) Serve(ctx context.Context, pc net.PacketConn) error {
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", s.handleRequest)
+
+	server := &dns.Server{PacketConn: pc, Handler: mux}
+	shutdownStarted := make(chan struct{})
+
+	//nolint:gosec // Shutdown requires a fresh, uncancelled context.
+	go func() {
+		<-ctx.Done()
+		close(shutdownStarted)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.ShutdownContext(shutdownCtx)
+	}()
+
+	logger.New("dns").Debug(fmt.Sprintf("listening on %s (tlds: %v)", pc.LocalAddr().String(), s.tlds))
+	
+	err := server.ActivateAndServe()
 	if err == nil || isShutdown(shutdownStarted) {
 		return nil
 	}
-	return fmt.Errorf("dns server failed on fallback port: %w", err)
+	return err
 }
 
 // isShutdown checks if the shutdown channel has been closed (non-blocking).

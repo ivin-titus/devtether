@@ -6,8 +6,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// configPath holds the path to devtether.yaml, settable via --config flag.
-var configPath string
+var (
+	// configPath holds the path to devtether.yaml, settable via --config flag.
+	configPath string
+	// verbose enables debug logging across all engines when true.
+	verbose bool
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "devtether",
@@ -34,6 +38,8 @@ Documentation: https://github.com/ivin-titus/devtether`,
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "devtether.yaml",
 		"path to devtether.yaml config file")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,
+		"enable verbose debug logging")
 }
 
 // SetBuildInfo configures the version information displayed by the root

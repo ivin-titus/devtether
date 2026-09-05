@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +24,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version, commit, and build date",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf(versionFormat, buildVersion, buildCommit, buildDate)
+		cmd.Printf(versionFormat, buildVersion, buildCommit, buildDate)
 	},
 }
 
