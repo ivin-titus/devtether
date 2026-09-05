@@ -68,6 +68,7 @@ impressed by cleverness, but by clarity, correctness, and restraint.
   | `proxy` | HTTP reverse proxying, Host header routing |
   | `daemon` | Unix socket IPC, CLI ↔ daemon communication |
   | `cli` | Flag parsing, user-facing output, error formatting |
+  | `logger` | Structured logging (slog), log filtering, error tracing |
 
   Don't leak responsibilities across boundaries.
 - **CLI is a thin layer.** Commands should parse flags, call domain logic, format
@@ -129,14 +130,27 @@ impressed by cleverness, but by clarity, correctness, and restraint.
   cases, invalid inputs, and concurrency paths are thoroughly covered.
 - **Ephemeral ports for network tests.** Never hardcode ports. Bind to `:0`
   and let the kernel assign an available port. Use `t.Cleanup()` to close
-  listeners.
+  listeners. //nolint:gosec // Justification here
 
-### Test Coverage Strategy (Current State)
+## 5. Logging Namespace Boundaries
+
+To maintain strict Separation of Concerns and reduce cognitive overload, all logs must be prefixed with a `[tag]` that maps directly to the isolated engine emitting it:
+
+- `[dns]`: Emitted strictly by `internal/dns` (DNS Server boot and fallback tracing).
+- `[proxy]`: Emitted strictly by `internal/proxy` (HTTP Reverse Proxy core, including raw `dial tcp` traces).
+- `[access]`: Emitted by the logging middleware inside the proxy (Standardized traffic visibility).
+- `[daemon]`: Emitted by `internal/daemon` (IPC Unix socket server).
+- `[route]`: Emitted by `internal/router` and the `up.go` health checker (Global routing state changes).
+- `[devtether]`: Top-level CLI orchestration logs.
+
+Never cross these boundaries (e.g., the `router` package should never emit a `[proxy]` log).
+
+## 6. Test Coverage Strategy (Current State)
 
 While 100% coverage is the long-term goal, current test coverage prioritizes core business logic (`config`, `dns`, `router`). Some infrastructural packages are currently untested by design, pending architectural refactors:
 
-- **`internal/cli`**: Currently uses `log.Fatalf`, which kills the process and breaks test runners. **Strategy:** Refactor commands to return errors (`RunE` pattern) before writing CLI unit tests.
-- **`internal/proxy`**: Requires setting up mock backend HTTP servers (`httptest.Server`) to assert on headers (like `X-Forwarded-For`). **Strategy:** Add integration-style tests in a future phase.
+- **`internal/cli`**: Refactored during the core engine rewrite to use `RunE` and return errors instead of `log.Fatalf`. Now fully ready for comprehensive CLI unit tests.
+- **`internal/proxy`**: Requires setting up mock backend HTTP servers (`httptest.Server`) to assert on headers (like `X-Forwarded-For`). **Strategy:** Add integration-style tests in a future stage.
 - **`internal/daemon`**: Manages OS-level IPC (Unix domain sockets) which introduces cross-platform flakiness. **Strategy:** Isolate platform-specific dialing logic before testing.
 - **`internal/netutil`**: Contains minimal wrapper logic (`errors.As`). Extremely low risk, but should be tested when time permits.
 

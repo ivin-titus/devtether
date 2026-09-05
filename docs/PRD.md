@@ -145,8 +145,8 @@ DevTether is conceptually built around three independent layers that coexist ins
 | `spf13/cobra` | CLI framework |
 | `gopkg.in/yaml.v3` | YAML config parsing |
 | `golang.org/x/sync/errgroup` | Concurrent server lifecycle |
-| `gorilla/websocket` | Tunnel WebSocket transport (Phase 4) |
-| `golang.org/x/crypto/acme` | Let's Encrypt on relay (Phase 4) |
+| `gorilla/websocket` | Tunnel WebSocket transport (Future) |
+| `golang.org/x/crypto/acme` | Let's Encrypt on relay (Future) |
 
 ---
 
@@ -189,18 +189,17 @@ See [ADR-003: Security Model](adr/003-security-model.md) for the complete threat
 
 ---
 
-## 11. Implementation Phases
+## 11. Implementation Roadmap
 
-| Phase | Name | Deliverable |
+| Stage | Name | Deliverable |
 |-------|------|-------------|
-| 1 | Foundation | Static routing, DNS, proxy with graceful shutdown |
-| 2 | Orchestration | Process supervisor, dynamic port injection |
-| 3 | LAN Sharing | mDNS broadcasting, `0.0.0.0` binding |
-| 4 | WAN Tunneling | Self-hosted relay, WebSocket tunnels |
-| 5 | Access Control | Token-based RBAC |
-| 6 | Polish & Community | Docs, CI/CD, goreleaser, community outreach |
+| **1** | **Core Networking Engine** | Local proxy, DNS embedded resolver, static routing via `devtether.yaml` |
+| **2** | **Orchestration & IPC** | Unix socket daemon, dynamic CLI commands (`devtether link`) |
+| **3** | **LAN Sharing** | Bind to `0.0.0.0`, simple token auth, Web UI dashboard |
+| **4** | **WAN Tunnels** | Public URL routing via cloud relay, Let's Encrypt integration |
+| **5** | **Zero Trust** | Cloudflare Access integration, strict RBAC, Audit Logs |
 
-Detailed task breakdowns are tracked per-phase in the project's issue tracker.
+Detailed task breakdowns are tracked per-stage in the project's issue tracker.
 
 ---
 
@@ -214,14 +213,15 @@ Detailed task breakdowns are tracked per-phase in the project's issue tracker.
 | Config Loader | ✅ Production-ready (validation, defaults, legacy detection) |
 | IPC Daemon | ✅ Production-ready (XDG socket, 0600 permissions) |
 | CLI (Cobra) | ✅ Production-ready (`up`, `routes` commands) |
-| Layer 1: Networking | ✅ Foundation Complete |
-| Layer 2: Orchestration | 🔲 Not yet implemented (Phase 2) |
-| Layer 3: Access Control (LAN/WAN + RBAC) | 🔲 Not yet implemented (Phases 3-5) |
+| Layer 1: Core Networking | 🔄 Partially Implemented (Local Static Routing Complete) |
+| Layer 2: Orchestration | 🔲 Planned |
+| Layer 3: Access Control (LAN/WAN + RBAC) | 🔲 Planned |
 
-**Legend:** ✅ Production-ready | 🔲 Not started
+**Legend:** ✅ Production-ready | 🔲 Planned
 
 ---
 
-*This PRD is a living document. It will be updated as the project evolves through its implementation phases.*
+*This PRD is a living document. It will be updated as the project evolves through its implementation roadmap.*---
+
 
 

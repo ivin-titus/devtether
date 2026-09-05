@@ -2,7 +2,7 @@
 
 > *Version 2.0-beta — Revised 2026-05-30*
 > 
-> **Project Status: Beta** — Layer 1 (Networking) is fully implemented and its core architecture is stable. Layers 2 and 3 are planned for future phases.
+> **Project Status: Beta** — Engine 1 (Local Static Routing) is fully implemented and provides a stable foundation for the project. The rest of Layer 1 (Cross-device tunnels) and Layers 2-3 are planned for future stages.
 
 This document provides a deep dive into the architecture of **DevTether**. If you're contributing to or hacking on the codebase, this is the best place to start.
 
@@ -216,7 +216,7 @@ devtether/
 └── README.md
 ```
 
-### Planned Directories (Future Phases)
+### Planned Directories (Future Stages)
 
 ```
 │   ├── internal/orchestrator/   # Process Supervisor + Port Manager (Layer 2)
@@ -282,4 +282,4 @@ The command `devtether stop <service>` instructs the IPC Daemon to coordinate ac
 
 ---
 
-*This architecture document is a living reference. It will be updated as layers are implemented across the project's phases.*
+*This architecture document is a living reference. It will be updated as layers are implemented across the project's stages.*

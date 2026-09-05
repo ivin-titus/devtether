@@ -20,7 +20,7 @@ Adopt a **"Secure by Default, Permissive by Opt-in"** security model:
 
 1. Every feature that expands the attack surface requires **explicit opt-in**.
 2. The default configuration is the **most restrictive possible**: loopback-only binding, no tunnels, no orchestration, no LAN exposure.
-3. Security hardening is phased across the implementation roadmap, with critical mitigations in Phase 1.
+3. Security hardening is phased across the implementation roadmap, with critical mitigations built into the Core Networking Engine.
 
 ### Specific Decisions
 

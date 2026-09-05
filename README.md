@@ -164,7 +164,7 @@ DevTether provides a **Unified Interface**: both the CLI and the stateless, lazy
 ## Documentation
 
 - [Architecture Overview](docs/architecture.md) — Deep dive into engines, request flows, and infrastructure
-- [Product Requirements](docs/PRD.md) — Goals, competitive landscape, and implementation phases
+- [Product Requirements](docs/PRD.md) — Goals, competitive landscape, and implementation roadmap
 - [Architectural Decision Records](docs/adr/README.md) — Why things are built the way they are
 
 ## Contributing
