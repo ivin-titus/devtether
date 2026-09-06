@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>502 Bad Gateway | DevTether</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline';">
+    <title>{{.StatusCode}} {{.StatusText}} | DevTether</title>
     <style>
         :root {
             --bg-color: #0c0a09;
@@ -22,7 +22,7 @@
         }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
             background-color: var(--bg-color);
             color: var(--text-primary);
             height: 100vh;
@@ -113,6 +113,8 @@
         .value {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             color: var(--text-primary);
+            word-break: break-all;
+            overflow-wrap: break-word;
         }
 
         .hint {
@@ -164,32 +166,34 @@
 <body>
     <div class="container">
         <div class="header">
-            <span class="status-badge">502</span>
-            <h1>Bad Gateway</h1>
+            <span class="status-badge">{{.StatusCode}}</span>
+            <h1>{{.StatusText}}</h1>
         </div>
         
-        <p>DevTether received the request, but the backend service refused the connection.</p>
+        <p>{{.Message}}</p>
         
+        {{if .Details}}
         <div class="details-box">
+            {{range .Details}}
             <div class="details-row">
-                <span class="label">Requested:</span>
-                <span class="value">{{.Host}}</span>
+                <span class="label">{{.Label}}</span>
+                <span class="value">{{.Value}}</span>
             </div>
-            <div class="details-row">
-                <span class="label">Target:</span>
-                <span class="value">{{.Target}}</span>
-            </div>
+            {{end}}
         </div>
+        {{end}}
 
+        {{if .Hint}}
         <div class="hint">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <div>
-                <strong>Did you start your backend?</strong><br>
-                Make sure your application is actually running and listening on port {{.TargetPort}}.
+                <strong>{{.Hint.Title}}</strong><br>
+                {{.Hint.Message}}
             </div>
         </div>
+        {{end}}
 
         {{if .ErrorTrace}}
         <div class="trace">
