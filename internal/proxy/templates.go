@@ -11,12 +11,24 @@ var errorPageHTML string
 // errorPageTemplate is strictly parsed using html/template to natively
 // contextualize and escape all variables (Host, Target). This completely
 // mitigates Reflected XSS vulnerabilities if a malicious Host header is passed.
-var errorPageTemplate = template.Must(template.New("502").Parse(errorPageHTML))
+var errorPageTemplate = template.Must(template.New("error_page").Parse(errorPageHTML))
 
-// ErrorPageData holds the context for rendering the 502 error overlay.
+type ErrorDetail struct {
+	Label string
+	Value string
+}
+
+type ErrorHint struct {
+	Title   string
+	Message string
+}
+
+// ErrorPageData holds the context for rendering the error overlay.
 type ErrorPageData struct {
-	Host       string
-	Target     string
-	TargetPort string
-	ErrorTrace string
+	StatusCode int
+	StatusText string
+	Message    string
+	Details    []ErrorDetail // Optional key-value rows
+	Hint       *ErrorHint    // Optional hint block
+	ErrorTrace string        // Optional diagnostic trace
 }

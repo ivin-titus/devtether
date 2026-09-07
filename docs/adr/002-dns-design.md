@@ -31,3 +31,10 @@ However, running a DNS server introduces significant security risks:
 
 - Developers must configure their OS resolver (e.g., `systemd-resolved`) to forward specific TLDs to `127.0.0.1:53`. This is a one-time setup step documented in the README.
 - In LAN mode, the DNS server is exposed to the local network, which is a deliberate and accepted tradeoff for the LAN sharing feature.
+
+## Amendment (Phase 8.3)
+**Date:** 2026-09-07
+
+The following constraints are added to fortify the DNS engine's stability and dual-stack compliance:
+1. **Panic Recovery in Network Boundaries:** Because `miekg/dns` spawns a new goroutine for every incoming UDP query, any unrecovered panic in the handler acts as a trivial Denial of Service (DoS) attack, crashing the entire DevTether daemon. Therefore, **any goroutine handling DNS queries MUST wrap its logic in a `defer recover()` block.** Furthermore, any locks acquired must be released via an immediate `defer mu.Unlock()` pairing to prevent the recovery from abandoning shared state.
+2. **Strict Dual-Stack Coupling:** The current loopback isolation explicitly relies on answering *only* `A` records (IPv4). If `AAAA` (IPv6) support is ever added to the DNS engine, both the DNS Server and Reverse Proxy MUST explicitly bind to `[::1]` (IPv6 loopback) in the exact same change to prevent connection-refused errors for IPv6-preferring clients.

@@ -6,6 +6,7 @@ package router
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 )
 
@@ -51,6 +52,7 @@ func NewEngine() *Engine {
 
 // AddRoute maps an incoming domain to a local port with the given route type.
 func (e *Engine) AddRoute(domain, serviceName string, port int, routeType RouteType) error {
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

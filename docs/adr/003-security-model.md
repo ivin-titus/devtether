@@ -65,3 +65,13 @@ Adopt a **"Secure by Default, Permissive by Opt-in"** security model:
 > **Devtether must never allow a network-reachable endpoint to execute arbitrary shell commands without explicit user consent.**
 
 This invariant must be validated against every feature before shipping.
+
+## Amendment (Phase 8.3)
+**Date:** 2026-09-07
+
+The following constraints are added to reinforce the "Secure by Default" model at the network boundary:
+
+1. **Strict Loopback Bindings & Least Privilege:** The proxy engine was previously discovered binding to `""` or `":port"` under fallback conditions, inadvertently exposing developer services to the entire local network (`0.0.0.0`). To fix this:
+   - Binding to `""` or `":port"` is strictly forbidden. Network servers (DNS, Proxy, Orchestrator ports) MUST explicitly bind to `127.0.0.1:<port>` to enforce hard loopback isolation.
+   - *Future Context:* When Engine 3 (Network Sharing) is implemented, binding to `0.0.0.0` will be permitted ONLY as an explicit, temporary opt-in (e.g., via the `--lan` flag). Even then, the implementation must rigorously follow the principle of least privilege (e.g., restricting broadcast interfaces where possible). Until Engine 3 arrives, `0.0.0.0` bindings are considered a security vulnerability.
+2. **Explicit Network Timeouts (DoS Protection):** Go's default `http.Client`, `http.Transport`, and `net.Dialer` have infinite timeouts (`0`), which enables trivial resource exhaustion (e.g., Slowloris, hanging backends). Any client or transport constructed in the codebase MUST set explicit non-zero timeouts (dial, response-header-wait, TLS handshake) to bound resource lifecycles.

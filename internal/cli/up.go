@@ -74,6 +74,11 @@ func runUp(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 5.5. Pre-flight check: ensure another daemon instance is not already running.
+	if checkErr := daemon.CheckRunning(ctx); checkErr != nil {
+		return checkErr
+	}
+
 	// --- DYNAMIC UI: STARTING ---
 	v := buildVersion
 	if v == "" {
@@ -224,20 +229,41 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 		routeLog := logger.New("route")
 
 		check := func() {
-			for _, domain := range domains {
-				port := cfg.Routes[domain]
-				online := isBackendOnline(ctx, port)
-				newState := 2 // offline
-				if online {
-					newState = 1 // online
-				}
+			g, _ := errgroup.WithContext(ctx)
+			type result struct {
+				domain string
+				online bool
+				state  int
+			}
+			results := make([]result, len(domains))
 
-				if newState != status[domain] {
-					status[domain] = newState
+			for i, domain := range domains {
+				idx, d := i, domain
+				g.Go(func() error {
+					port := cfg.Routes[d]
+					online := isBackendOnline(ctx, port)
+					newState := 2 // offline
 					if online {
-						routeLog.Info(fmt.Sprintf("● %s is online", domain))
+						newState = 1 // online
+					}
+					results[idx] = result{
+						domain: d,
+						online: online,
+						state:  newState,
+					}
+					return nil
+				})
+			}
+			_ = g.Wait()
+
+			// Print output deterministically and update state map
+			for _, r := range results {
+				if r.state != status[r.domain] {
+					status[r.domain] = r.state
+					if r.online {
+						routeLog.Info(fmt.Sprintf("● %s is online", r.domain))
 					} else {
-						routeLog.Info(fmt.Sprintf("○ %s is offline", domain))
+						routeLog.Info(fmt.Sprintf("○ %s is offline", r.domain))
 					}
 				}
 			}

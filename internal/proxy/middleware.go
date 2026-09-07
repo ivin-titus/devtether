@@ -36,6 +36,9 @@ func (lrw *loggingResponseWriter) WriteHeader(code int) {
 }
 
 func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
+	if !lrw.wroteHeader {
+		lrw.WriteHeader(http.StatusOK)
+	}
 	size, err := lrw.ResponseWriter.Write(b)
 	lrw.bytesWritten += size
 	return size, err

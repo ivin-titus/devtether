@@ -1,6 +1,0 @@
-# DevTether — Local config
-# Map your already-running services to clean domain names.
-
-routes:
-  portfolio.localhost: 3222
-  horiz.localhost: 3000

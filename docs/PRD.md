@@ -20,7 +20,7 @@ DevTether is built around **4 independent engines** that coexist inside one bina
 
 ### Primary Goals
 
-1. **Eliminate port memorization** — Replace `localhost:PORT` with clean named domains (e.g., `portfolio.localhost`).
+1. **Eliminate port memorization** — Replace `localhost:PORT` with clean named domains (e.g., `web.localhost`).
 2. **Zero-config static routing** — Map existing services running on fixed ports to named domains with one command.
 3. **Optional process orchestration** — For microservice-heavy setups, auto-allocate ports and manage process lifecycles.
 4. **Self-hosted environment sharing** — Enable LAN sharing (same WiFi/VPN) and WAN tunneling (self-hosted relay) without third-party SaaS.
@@ -66,9 +66,9 @@ DevTether is built around **4 independent engines** that coexist inside one bina
 frontend   → localhost:3000
 backend    → localhost:8000
 admin      → localhost:8080
-grafana    → localhost:3001
-job-flow   → localhost:3223
-api        → localhost:8042
+monitor    → localhost:3001
+worker     → localhost:3223
+db         → localhost:8042
 ```
 
 Developers must constantly remember these mappings. Port conflicts (`EADDRINUSE`) derail flow state. Sharing with teammates requires Ngrok subscriptions or manual IP+port sharing.
@@ -76,12 +76,12 @@ Developers must constantly remember these mappings. Port conflicts (`EADDRINUSE`
 ### The Solution
 
 ```text
-frontend   → portfolio.localhost
+frontend   → web.localhost
 backend    → api.localhost
 admin      → admin.localhost
-grafana    → grafana.localhost
-job-flow   → job-flow.localhost
-api        → api.job-flow.localhost
+monitor    → monitor.localhost
+worker     → worker.localhost
+db         → db.worker.localhost
 ```
 
 One YAML file. One binary. One command: `devtether up`.
@@ -97,14 +97,14 @@ DevTether is conceptually built around three independent layers that coexist ins
 - **Static Routing:** Maps pre-existing services on fixed ports to named `.localhost` domains.
 - **Intelligent IP Cycling:** Dynamically binds to `127.0.0.x` loopback addresses, avoiding port conflicts by actively scanning for `0.0.0.0` bindings (highly optimized O(1) checks).
 - **Traffic Inspection:** Buffers network payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays in the GUI.
-- **Smart Project-Boundary CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while blocking cross-project local access to establish a base layer of local security.
+- **Smart Project-Boundary CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `web.localhost` to `api.web.localhost`) while blocking cross-project local access to establish a base layer of local security.
 - **Rich Error Pages:** Serves ultra-lightweight Cloudflare-style HTML error pages if a backend is down, functioning perfectly even if the GUI process is offline.
 
 ### Layer 2: The Process Orchestrator Layer
 **The Vercel DevTether competitor.** Manages the lifecycle of developer applications (Node, Go, Python).
 - **Process Groups:** Orchestrates apps into isolated Process Groups (PGIDs) for clean shutdown (`devtether stop <group>`).
 - **Dynamic Ports:** Allocates ephemeral `$PORT` environment variables.
-- **Unified Logging:** Captures stdout/stderr and prefixes them (e.g., `[app | api]`) to clearly separate them from network access logs (`[proxy | portfolio]`).
+- **Unified Logging:** Captures stdout/stderr and prefixes them (e.g., `[app | api]`) to clearly separate them from network access logs (`[proxy | web]`).
 
 ### Layer 3: The Access Controls Layer
 **The enterprise signal.** Secures cross-network and cross-org collaboration.
@@ -213,7 +213,7 @@ Detailed task breakdowns are tracked per-stage in the project's issue tracker.
 | Config Loader | ✅ Production-ready (validation, defaults, legacy detection) |
 | IPC Daemon | ✅ Production-ready (XDG socket, 0600 permissions) |
 | CLI (Cobra) | ✅ Production-ready (`up`, `routes` commands) |
-| Layer 1: Core Networking | 🔄 Partially Implemented (Local Static Routing Complete) |
+| Layer 1: Core Networking | ✅ Production-ready (Local Static Routing Complete) |
 | Layer 2: Orchestration | 🔲 Planned |
 | Layer 3: Access Control (LAN/WAN + RBAC) | 🔲 Planned |
 

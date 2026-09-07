@@ -95,7 +95,7 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn) error {
 	}()
 
 	logger.New("dns").Debug(fmt.Sprintf("listening on %s (tlds: %v)", pc.LocalAddr().String(), s.tlds))
-	
+
 	err := server.ActivateAndServe()
 	if err == nil || isShutdown(shutdownStarted) {
 		return nil

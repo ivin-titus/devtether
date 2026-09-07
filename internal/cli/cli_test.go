@@ -48,16 +48,18 @@ func TestVersionCmd(t *testing.T) {
 	// Redirect stdout to capture version output
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
-	
+
 	// Set args to invoke version command
 	rootCmd.SetArgs([]string{"version"})
-	
+
 	err := Execute()
+
+	output := buf.String()
+
 	if err != nil {
 		t.Fatalf("expected no error executing version cmd, got: %v", err)
 	}
-	
-	output := buf.String()
+
 	if !strings.Contains(output, "v1.2.3") {
 		t.Errorf("expected output to contain 'v1.2.3', got: %s", output)
 	}
