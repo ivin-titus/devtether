@@ -33,6 +33,7 @@ Documentation: https://github.com/ivin-titus/devtether`,
 	// With SilenceErrors=true, errors are only returned — main.go handles
 	// exit codes without duplicate printing.
 	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 func init() {
@@ -58,4 +59,3 @@ func SetBuildInfo(version, commit, date string) {
 func Execute() error {
 	return rootCmd.Execute()
 }
-

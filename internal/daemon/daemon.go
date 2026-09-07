@@ -23,6 +23,22 @@ import (
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
+// CheckRunning returns an error if another daemon instance is already active.
+func CheckRunning(ctx context.Context) error {
+	socketPath := SocketPath()
+	if _, statErr := os.Stat(socketPath); statErr == nil {
+		dialer := net.Dialer{Timeout: 1 * time.Second}
+		conn, dialErr := dialer.DialContext(ctx, "unix", socketPath)
+		if dialErr == nil {
+			_ = conn.Close()
+			return fmt.Errorf("daemon: already running on %s", socketPath)
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("daemon: failed to pre-flight socket: %w", statErr)
+	}
+	return nil
+}
+
 // SocketPath returns the platform-appropriate path for the IPC socket.
 func SocketPath() string {
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/ivin-titus/devtether/internal/cli"
@@ -17,8 +18,7 @@ var (
 func main() {
 	cli.SetBuildInfo(version, commit, date)
 	if err := cli.Execute(); err != nil {
-		// SilenceErrors is set on rootCmd, so the error is returned
-		// without printing. We just set the exit code here.
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }

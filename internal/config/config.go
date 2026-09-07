@@ -19,12 +19,12 @@ import (
 // Each top-level key activates an independent engine.
 // Absent keys mean that engine is not loaded.
 type Config struct {
-	Routes      map[string]int            `yaml:"routes,omitempty"`
-	Orchestrate map[string]ServiceConfig  `yaml:"orchestrate,omitempty"`
-	Tunnel      *TunnelConfig             `yaml:"tunnel,omitempty"`
-	Access      *AccessConfig             `yaml:"access,omitempty"`
-	Proxy       ProxyConfig               `yaml:"proxy,omitempty"`
-	DNS         DNSConfig                 `yaml:"dns,omitempty"`
+	Routes      map[string]int           `yaml:"routes,omitempty"`
+	Orchestrate map[string]ServiceConfig `yaml:"orchestrate,omitempty"`
+	Tunnel      *TunnelConfig            `yaml:"tunnel,omitempty"`
+	Access      *AccessConfig            `yaml:"access,omitempty"`
+	Proxy       ProxyConfig              `yaml:"proxy,omitempty"`
+	DNS         DNSConfig                `yaml:"dns,omitempty"`
 }
 
 // ServiceConfig defines an orchestrated service (Engine 2, Phase 2).

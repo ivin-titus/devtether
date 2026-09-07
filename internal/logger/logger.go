@@ -19,21 +19,21 @@ type devHandler struct {
 func (h *devHandler) Handle(ctx context.Context, r slog.Record) error {
 	if !h.verbose {
 		msg := r.Message
-		
+
 		var attrs []string
 		r.Attrs(func(a slog.Attr) bool {
 			attrs = append(attrs, fmt.Sprintf("%s=%v", a.Key, a.Value.Any()))
 			return true
 		})
-		
+
 		if len(attrs) > 0 {
 			msg = fmt.Sprintf("%s \033[90m(%s)\033[0m", msg, strings.Join(attrs, " "))
 		}
-		
+
 		outLog.Println(msg)
 		return nil
 	}
-	
+
 	return h.Handler.Handle(ctx, r)
 }
 
@@ -54,7 +54,7 @@ func Setup(verbose bool) {
 		Handler: baseHandler,
 		verbose: verbose,
 	}
-	
+
 	slog.SetDefault(slog.New(handler))
 }
 

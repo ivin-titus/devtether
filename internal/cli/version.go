@@ -27,4 +27,3 @@ var versionCmd = &cobra.Command{
 		cmd.Printf(versionFormat, buildVersion, buildCommit, buildDate)
 	},
 }
-
