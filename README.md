@@ -6,9 +6,9 @@ DevTether is a modular, self-hosted developer networking toolkit for Unix enviro
 
 ```text
 Before:                          After:
-localhost:3222                   portfolio.localhost
-localhost:3223                   job-flow.localhost
-localhost:8042                   api.job-flow.localhost
+localhost:3222                   web.localhost
+localhost:3223                   api.localhost
+localhost:8042                   db.localhost
 ```
 
 > [!WARNING]
@@ -24,7 +24,7 @@ devtether init
 
 # 3. Edit your routes
 #    routes:
-#      portfolio.localhost: 3222
+#      web.localhost: 3222
 #      api.localhost: 8042
 
 # 4. Start routing
@@ -49,18 +49,19 @@ Download the latest release for your platform from [GitHub Releases](https://git
 # Example for Linux amd64 (replace version with latest)
 tar -xzf devtether_2.0.0-beta.2_linux_amd64.tar.gz
 chmod +x devtether
-sudo mv devtether /usr/local/bin/
+mkdir -p ~/.local/bin
+mv devtether ~/.local/bin/
 ```
 
 ### Option 3: Build from Source
 
-Requires Go 1.21+.
+Requires Go 1.27.1+.
 
 ```bash
 git clone https://github.com/ivin-titus/devtether.git
 cd devtether
-go build -o devtether ./cmd/devtether
-sudo mv devtether /usr/local/bin/
+make build
+make install
 ```
 
 ### Post-Install Setup
@@ -72,10 +73,10 @@ Depending on your operating system, there are a few final steps to configure Dev
 
 **1. Network Capabilities**
 
-DevTether binds to Port 80 and Port 53. To avoid running as `root`, grant the binary capabilities:
+DevTether is secure-by-default and strictly binds to loopback (`127.0.0.1:80` and `127.0.0.1:53`) to prevent accidental LAN exposure. To avoid running as `root` while binding these privileged ports, grant the binary capabilities:
 
 ```bash
-sudo setcap cap_net_bind_service=+ep $(which devtether)
+sudo setcap cap_net_bind_service=+ep ~/.local/bin/devtether
 ```
 > *If you skip this, DevTether gracefully falls back to unprivileged ports (8080 for HTTP, 5353 for DNS).*
 
@@ -102,7 +103,7 @@ sudo systemctl restart dnsmasq
 
 **1. Port Binding**
 
-macOS does not support capabilities like Linux. To use ports 80 and 53, run `devtether` with `sudo`, or simply let it fall back to the unprivileged ports (`8080` and `5353`).
+macOS does not support capabilities like Linux. To use the privileged loopback ports (`127.0.0.1:80` and `127.0.0.1:53`), run `devtether` with `sudo`, or simply let it fall back to the unprivileged ports (`8080` and `5353`).
 
 **2. DNS Configuration**
 
@@ -122,9 +123,9 @@ Map your already-running services to clean domains:
 
 ```yaml
 routes:
-  portfolio.localhost: 3222
-  job-flow.localhost: 3223
-  api.job-flow.localhost: 8042
+  web.localhost: 3222
+  api.localhost: 3223
+  db.localhost: 8042
 ```
 
 See [examples/](examples/) for more configuration patterns, including proxy timeouts and DNS settings.

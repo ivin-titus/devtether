@@ -118,10 +118,10 @@ Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication
 **Endpoints:**
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/services` | List all active routes and services |
-| `POST` | `/services` | Add a route or orchestrated service |
-| `DELETE` | `/services?domain=X` | Remove a route or stop a service |
-| `GET` | `/status` | Health check + engine status |
+| `GET` | `/routes` | List all active routes |
+| `POST` | `/services` | **[Planned]** Add a route or orchestrated service |
+| `DELETE` | `/services?domain=X` | **[Planned]** Remove a route or stop a service |
+| `GET` | `/status` | **[Planned]** Health check + engine status |
 
 ---
 
@@ -132,10 +132,10 @@ This layer handles all traffic, routing, and local network topologies.
 **Config section:** `routes:`
 
 - **Static Routing:** Maps pre-existing services on fixed ports to named domains. No process management. The Router is populated directly from the YAML config.
-- **Intelligent IP Cycling:** Actively scans `/proc/net/tcp` for `0.0.0.0` bindings. If `127.0.0.1:80` is occupied, it cycles to `127.0.0.2`, `127.0.0.3`, etc., using highly optimized O(1) checks.
-- **Smart CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while blocking cross-project local access.
-- **Traffic Inspection:** Buffers payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays.
-- **Rich Error Pages:** Serves an ultra-lightweight Cloudflare-style HTML error page if a backend goes down.
+- **[Planned] Intelligent IP Cycling:** Actively scans `/proc/net/tcp` for `0.0.0.0` bindings. If `127.0.0.1:80` is occupied, it cycles to `127.0.0.2`, `127.0.0.3`, etc., using highly optimized O(1) checks.
+- **[Planned] Smart CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while blocking cross-project local access.
+- **[Planned] Traffic Inspection:** Buffers payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays.
+- **Rich Error Pages:** Serves an ultra-lightweight HTML error page if a backend goes down.
 
 ---
 

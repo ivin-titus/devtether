@@ -93,6 +93,8 @@ impressed by cleverness, but by clarity, correctness, and restraint.
 - **Errors are for callers; logs are for operators.** Return errors up the call
   stack with context (`fmt.Errorf("dns: failed to bind: %w", err)`). Only log at
   the point where you handle the error — never log and return.
+- **CLI Error Visibility.** Every command's `RunE` error must be visible on stderr before the process exits. `cobra.Command{SilenceErrors: true}` MUST be paired with explicit error printing at the call site.
+  - **Enforcement:** A table-driven test that runs each command in a known-failing scenario and asserts stderr is non-empty and contains the expected substring — not just that `Execute()` returned non-nil.
 
 ---
 
@@ -110,6 +112,10 @@ impressed by cleverness, but by clarity, correctness, and restraint.
   `errgroup` in `up.go`. New concurrent work should follow the same pattern:
   launch goroutines via `g.Go()`, return errors, and let the group coordinate
   shutdown.
+- **Panic Recovery in Boundaries:** Any goroutine spawned to handle untrusted, external UDP or TCP payloads (e.g., DNS listeners, Proxy connections) MUST wrap its handler logic in a `defer recover()` block. 
+  - Recovery alone is necessary but not sufficient. Any lock acquired inside a boundary handler MUST be released via `defer mu.Unlock()` immediately after `Lock()` — never conditionally, never after other logic — so a recovered panic cannot leave shared state permanently locked. 
+  - The recovered log line must include `runtime/debug.Stack()`.
+- **Signal Handlers Must Disarm After First Use:** Any goroutine using `signal.Notify` for graceful shutdown must call `signal.Stop()` once the shutdown sequence begins, so a second signal falls through to the OS default (immediate termination) instead of being silently absorbed by a channel nobody reads anymore.
 
 ---
 
@@ -131,6 +137,20 @@ impressed by cleverness, but by clarity, correctness, and restraint.
 - **Ephemeral ports for network tests.** Never hardcode ports. Bind to `:0`
   and let the kernel assign an available port. Use `t.Cleanup()` to close
   listeners. //nolint:gosec // Justification here
+- **No Unguarded Global State Mutation in Tests:** Tests must not reassign package-level globals (`os.Stdout`, `os.Stderr`, env vars) without an unconditional `defer`-based restore registered *before* the code under test runs, so a panic mid-test can't corrupt global state for every subsequent test in the same process. Prefer passing an `io.Writer` into the code under test over reassigning globals, wherever the code allows it.
+
+## 5. Networking & Boundaries (NEW)
+
+- **Defensive Edge Normalization:** Host/domain normalization MUST live in exactly one function per direction (e.g., `internal/netutil.NormalizeHost`), imported by every producer and every consumer of routing-table keys — not reimplemented per-package. This function must handle, in order:
+  1. Strip a `[...]` IPv6 literal only when both the leading `[` and trailing `]` are present (`strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]")`). Never use a blanket character-class `strings.Trim`.
+  2. Strip the port via `net.SplitHostPort`, falling back to the original string only on a confirmed "missing port" `*net.AddrError`.
+  3. Strip a trailing FQDN dot.
+  4. Lowercase.
+  - **Any PR that adds a second implementation of this logic is a standards violation.**
+- **Production-Grade Streaming & Context Integrity:** DevTether must operate as a production-grade reverse proxy, supporting modern continuous-connection protocols (SSE, WebSockets, GraphQL subscriptions).
+  1. Any HTTP middleware that intercepts a `http.ResponseWriter` must track whether headers have been sent (`wroteHeader bool`). If a downstream error is detected *after* headers were sent, the correct action is `panic(http.ErrAbortHandler)` to cleanly abort the connection — never attempt to write a fallback status or body onto an already-started response.
+  2. Resolution logic must only occur once per request; inject the resolved target into `context.Context` in `ServeHTTP` and read it everywhere downstream, including inside `Rewrite`.
+- **No Implicit-Timeout Network Primitives:** Any `http.Client`, `http.Transport`, or `net.Dialer` constructed anywhere in this codebase must set explicit non-zero timeouts (dial, response-header-wait, and TLS handshake where applicable). Never rely on Go's zero-value/infinite defaults.
 
 ## 5. Logging Namespace Boundaries
 
@@ -199,6 +219,8 @@ While 100% coverage is the long-term goal, current test coverage prioritizes cor
   instead of logging.
 - **Don't log and return.** Either log the error and handle it, or wrap it and
   return it. Doing both creates duplicate log lines.
+- **ANSI Discipline:** Core logging pipelines and internal formatters MUST NEVER hardcode ANSI escape characters. If colors are desired for CLI UX, they must be applied dynamically at the presentation layer (e.g., `cmd/devtether/`), and they must strictly respect non-TTY execution and standard `NO_COLOR` environment variables.
+  - **Enforcement:** Use `golang.org/x/term.IsTerminal(int(os.Stdout.Fd()))` (pure Go, no cgo, consistent with ADR-006) as the primary TTY check, with `NO_COLOR` as an explicit override.
 
 ---
 
@@ -206,6 +228,10 @@ While 100% coverage is the long-term goal, current test coverage prioritizes cor
 
 - **Restrictive permissions by default.** Unix sockets use `0600`, socket
   directories use `0700`. Config files use `0644`.
+- **Strict Loopback Bindings & Least Privilege:** Binding to `""` or `":port"` is strictly forbidden. Network servers (DNS, Proxy, Orchestrator ports) MUST explicitly bind to `127.0.0.1:<port>` to enforce hard loopback isolation.
+  - *Future Context:* When Engine 3 (Network Sharing) is implemented, binding to `0.0.0.0` will be permitted ONLY as an explicit, temporary opt-in (e.g., `--lan` flag), and must rigorously follow the principle of least privilege.
+  - *ADR-002 Coupling:* This binding rule is coupled to ADR-002's decision to answer only `A` records for managed domains. If DNS `AAAA` support is ever added, the proxy and DNS server MUST bind `::1` as well, in the same change.
+- **Fail-Fast Resource Acquisition Ordering:** Cheap, likely-to-fail conflict checks (existing daemon, existing lock file, existing PID) must run *before* claiming OS-level resources (port binds, file creates). Do not bind ports and then discover a conflict — discover the conflict first.
 - **No hardcoded secrets or credentials.** This includes test fixtures.
   Use environment variables or file paths.
 - **Validate all user input at the boundary.** Config values, CLI flags,

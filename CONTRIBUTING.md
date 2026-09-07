@@ -62,7 +62,7 @@ go run ./cmd/devtether up
 ```
 
 **Requirements:**
-- Go 1.25+ (see `go.mod` for exact version)
+- Go 1.27.1+ (see `go.mod` for exact version)
 - Unix-based OS (Linux or macOS) — see [ADR-006](docs/adr/006-platform-support-and-cgo-policy.md)
 
 **Recommended tools** (CI uses these — install locally for faster feedback):
