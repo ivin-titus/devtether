@@ -21,6 +21,14 @@ const (
 	RouteOrchestrated RouteType = "orchestrated"
 )
 
+// RouteView is a read-only snapshot of a route for external consumers.
+type RouteView struct {
+	Domain      string
+	ServiceName string
+	Port        int
+	Type        RouteType
+}
+
 // Target represents where a specific domain should be routed.
 type Target struct {
 	ServiceName string
@@ -32,7 +40,7 @@ type Target struct {
 // Resolver looks up a routing target by hostname.
 // This is the contract between the proxy/DNS engines and the routing table.
 type Resolver interface {
-	Resolve(host string) *Target
+	Resolve(host string) (Target, bool)
 	Domains() []string
 }
 
@@ -77,12 +85,22 @@ func (e *Engine) RemoveRoute(domain string) {
 	delete(e.routes, domain)
 }
 
-// Resolve returns the Target for a specific domain. Returns nil if not found.
+// Resolve returns the Target for a specific domain. Returns a boolean indicating if found.
 // This method satisfies the Resolver interface.
-func (e *Engine) Resolve(host string) *Target {
+func (e *Engine) Resolve(host string) (Target, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.routes[host]
+	t, ok := e.routes[host]
+	if !ok {
+		return Target{}, false
+	}
+	u := *t.URL // Deep copy
+	return Target{
+		ServiceName: t.ServiceName,
+		Port:        t.Port,
+		URL:         &u,
+		Type:        t.Type,
+	}, true
 }
 
 // Domains returns a list of all registered domain names.
@@ -99,14 +117,19 @@ func (e *Engine) Domains() []string {
 }
 
 // GetAllRoutes returns a snapshot of the current routing map.
-// The returned map is a copy and safe to read without holding the lock.
-func (e *Engine) GetAllRoutes() map[string]*Target {
+// The returned slice is safe to read without holding the lock.
+func (e *Engine) GetAllRoutes() []RouteView {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	snapshot := make(map[string]*Target, len(e.routes))
-	for k, v := range e.routes {
-		snapshot[k] = v
+	views := make([]RouteView, 0, len(e.routes))
+	for domain, t := range e.routes {
+		views = append(views, RouteView{
+			Domain:      domain,
+			ServiceName: t.ServiceName,
+			Port:        t.Port,
+			Type:        t.Type,
+		})
 	}
-	return snapshot
+	return views
 }

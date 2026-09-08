@@ -51,8 +51,8 @@ func NewHandler(resolver router.Resolver) *Handler {
 	h.rp = &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			target, _ := pr.In.Context().Value(targetCtxKey).(*router.Target)
-			if target != nil {
+			target, ok := pr.In.Context().Value(targetCtxKey).(router.Target)
+			if ok {
 				pr.SetURL(target.URL)
 				pr.SetXForwarded()
 				host, _ := pr.In.Context().Value(hostCtxKey).(string)
@@ -63,12 +63,17 @@ func NewHandler(resolver router.Resolver) *Handler {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
+			// ADR-008: If headers were already sent (mid-stream crash),
+			// abort the TCP connection cleanly — never corrupt the payload.
+			if lrw, ok := w.(*loggingResponseWriter); ok && lrw.HeadersSent() {
+				panic(http.ErrAbortHandler)
+			}
 			host, _ := req.Context().Value(hostCtxKey).(string)
-			target, _ := req.Context().Value(targetCtxKey).(*router.Target)
+			target, ok := req.Context().Value(targetCtxKey).(router.Target)
 
 			var targetURL string
 			var port int
-			if target != nil {
+			if ok {
 				targetURL = target.URL.String()
 				port = target.Port
 			}
@@ -121,8 +126,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := h.resolver.Resolve(host)
-	if target == nil {
+	target, ok := h.resolver.Resolve(host)
+	if !ok {
 		renderErrorPage(w, http.StatusNotFound, ErrorPageData{
 			StatusCode: http.StatusNotFound,
 			StatusText: "Route Not Found",

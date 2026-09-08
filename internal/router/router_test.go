@@ -12,9 +12,9 @@ func TestEngine_AddAndResolve(t *testing.T) {
 		t.Fatalf("failed to add route: %v", err)
 	}
 
-	target := e.Resolve("api.localhost")
-	if target == nil {
-		t.Fatal("expected target for 'api.localhost', got nil")
+	target, ok := e.Resolve("api.localhost")
+	if !ok {
+		t.Fatal("expected target for 'api.localhost', got ok=false")
 	}
 	if target.Port != 40123 {
 		t.Errorf("expected port 40123, got %d", target.Port)
@@ -33,8 +33,8 @@ func TestEngine_AddAndResolve(t *testing.T) {
 func TestEngine_ResolveNotFound(t *testing.T) {
 	e := NewEngine()
 
-	if target := e.Resolve("unknown.localhost"); target != nil {
-		t.Fatalf("expected nil for unknown route, got %v", target)
+	if _, ok := e.Resolve("unknown.localhost"); ok {
+		t.Fatalf("expected ok=false for unknown route, got ok=true")
 	}
 }
 
@@ -43,8 +43,8 @@ func TestEngine_RemoveRoute(t *testing.T) {
 	_ = e.AddRoute("api.localhost", "api", 8080, RouteStatic)
 	e.RemoveRoute("api.localhost")
 
-	if target := e.Resolve("api.localhost"); target != nil {
-		t.Fatalf("expected nil after removal, got %v", target)
+	if _, ok := e.Resolve("api.localhost"); ok {
+		t.Fatalf("expected ok=false after removal, got ok=true")
 	}
 }
 
@@ -79,9 +79,14 @@ func TestEngine_GetAllRoutes(t *testing.T) {
 	}
 
 	// Verify the snapshot is a copy — modifying it shouldn't affect the engine.
-	delete(snapshot, "a.localhost")
-	if e.Resolve("a.localhost") == nil {
-		t.Fatal("deleting from snapshot affected the engine — snapshot must be a copy")
+	originalPort := snapshot[0].Port
+	snapshot[0].Port = 9999
+	if target, ok := e.Resolve(snapshot[0].Domain); !ok {
+		t.Fatal("target should still exist in engine")
+	} else if target.Port == 9999 {
+		t.Fatal("modifying snapshot affected the engine — snapshot must be a copy")
+	} else if target.Port != originalPort {
+		t.Fatalf("engine port changed unexpectedly: got %d, want %d", target.Port, originalPort)
 	}
 }
 
@@ -93,7 +98,7 @@ func TestEngine_Concurrency(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 1000; i++ {
-			_ = e.Resolve("api.localhost")
+			_, _ = e.Resolve("api.localhost")
 		}
 		done <- true
 	}()
