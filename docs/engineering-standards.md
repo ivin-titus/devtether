@@ -240,6 +240,7 @@ While 100% coverage is the long-term goal, current test coverage prioritizes cor
 - **Supply chain integrity.** `go mod verify` checks module checksums
   against `go.sum`. `govulncheck` checks for known vulnerabilities.
   `gosec` scans for insecure coding patterns.
+- **Zero-State Reuse & Defense-in-Depth:** DevTether enforces strict architectural boundaries to prevent cross-request state leakage, DNS rebinding, log forging, and protocol manipulation. For a comprehensive breakdown of these rules (including `sync.Pool` safety and `context.Context` isolation) and the massive industry failures that inspired them, you MUST read [ADR-009: Proxy Security Lessons & Defense-in-Depth](adr/009-proxy-security-lessons.md).
 
 ---
 

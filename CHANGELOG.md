@@ -4,6 +4,20 @@ All notable changes to DevTether are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [v2.0.0-beta.5] — 2026-09-09
+
+### Added
+- **Proxy Engine:** Enabled infinite streaming (WebSockets/SSE) by replacing absolute read/write timeouts with `ReadHeaderTimeout` and `IdleTimeout`.
+- **DNS Protocol:** Implemented RFC 4074 dual-stack compliance (proper `NODATA` responses for `AAAA` queries to valid routes) to prevent OS DNS cache poisoning.
+
+### Fixed
+- **Daemon Lifecycle:** Removed a dangerous IPC socket TOCTOU vulnerability by implementing atomic `Umask(0177)` creation.
+- **Daemon Resilience:** Solved the fast-restart socket race condition and ensured correct bubbling of daemon permission errors (`EACCES`).
+- **Proxy Security:** Enforced strict loopback network binding (`127.0.0.1`) to prevent unintended LAN exposure on fallback ports.
+- **Proxy Robustness:** Added state tracking to cleanly abort proxy streams, preventing double-header mid-stream payload corruption.
+- **Router Concurrency:** Sealed a severe router encapsulation data race by returning deep-copied `RouteView` structs by-value.
+- **DNS Security:** Fortified the DNS engine against remote UDP DoS by wrapping query handlers in panic recovery middleware.
+
 ## [v2.0.0-beta.4] — 2026-09-07
 
 ### Added
