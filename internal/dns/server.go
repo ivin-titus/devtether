@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -117,6 +118,13 @@ func isShutdown(ch <-chan struct{}) bool {
 // for domains registered in the routing table under a configured TLD
 // receive a response. All other queries receive NXDOMAIN (per ADR-002).
 func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
+	defer func() {
+		if rv := recover(); rv != nil {
+			logger.New("dns").Error("panic recovered in handler",
+				fmt.Errorf("%v\n%s", rv, debug.Stack()))
+		}
+	}()
+
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.Compress = false
@@ -129,10 +137,6 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 	matched := false
 	for _, q := range m.Question {
-		if q.Qtype != dns.TypeA {
-			continue
-		}
-
 		// DNS names are FQDN with trailing dot — strip it for lookup.
 		name := strings.TrimSuffix(strings.ToLower(q.Name), ".")
 
@@ -140,17 +144,20 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 			continue
 		}
 
-		// Only answer for domains that actually have routes registered.
-		if s.resolver.Resolve(name) == nil {
+		// Check route existence FIRST, independent of query type.
+		if _, ok := s.resolver.Resolve(name); !ok {
 			continue
 		}
+		matched = true // Route exists — prevents NXDOMAIN.
 
-		// Static routing always resolves to loopback.
-		rr, err := dns.NewRR(fmt.Sprintf("%s A 127.0.0.1", q.Name))
-		if err == nil {
-			m.Answer = append(m.Answer, rr)
-			matched = true
+		// Only generate A records for TypeA queries.
+		if q.Qtype == dns.TypeA {
+			rr, err := dns.NewRR(fmt.Sprintf("%s A 127.0.0.1", q.Name))
+			if err == nil {
+				m.Answer = append(m.Answer, rr)
+			}
 		}
+		// AAAA/HTTPS for valid routes → matched=true, 0 answers → NODATA (RFC 4074).
 	}
 
 	// Return NXDOMAIN for queries that matched no routes (ADR-002 contract).

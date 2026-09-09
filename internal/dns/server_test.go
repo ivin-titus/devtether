@@ -278,7 +278,7 @@ func TestHandleRequestNonQuery(t *testing.T) {
 	}
 }
 
-// TestNonARecordQuery verifies that non-A queries (e.g. AAAA, MX) get NXDOMAIN.
+// TestNonARecordQuery verifies that non-A queries (e.g. AAAA, MX) get NOERROR (NODATA) for valid routes.
 func TestNonARecordQuery(t *testing.T) {
 	engine := router.NewEngine()
 	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
@@ -288,7 +288,7 @@ func TestNonARecordQuery(t *testing.T) {
 	c := new(mdns.Client)
 	c.Timeout = 2 * time.Second
 
-	// Query AAAA for a domain that has an A record — should still get NXDOMAIN.
+	// Query AAAA for a domain that has an A record — should get NOERROR (NODATA).
 	msg := new(mdns.Msg)
 	msg.SetQuestion("myapp.localhost.", mdns.TypeAAAA)
 
@@ -297,8 +297,8 @@ func TestNonARecordQuery(t *testing.T) {
 		t.Fatalf("AAAA query failed: %v", err)
 	}
 
-	if resp.Rcode != mdns.RcodeNameError {
-		t.Errorf("AAAA query Rcode = %s, want NXDOMAIN",
+	if resp.Rcode != mdns.RcodeSuccess {
+		t.Errorf("AAAA query Rcode = %s, want NOERROR",
 			mdns.RcodeToString[resp.Rcode])
 	}
 
