@@ -75,9 +75,9 @@ The DNS engine intercepts UDP queries on port 53 for configured TLDs and resolve
 The HTTP reverse proxy is the primary data plane for all engines.
 
 **Behavior:**
-- Default bind: `:80`
-- Fallback chain: `:80` → `:8080` → `:0` (OS-assigned port) on `EACCES` or `EADDRINUSE`
-- Uses `http.Server{}` with explicit timeouts (`ReadTimeout`, `WriteTimeout`, `IdleTimeout`)
+- Default bind: `127.0.0.1:80`
+- Fallback chain: `127.0.0.1:80` → `127.0.0.1:8080` → `127.0.0.1:0` (OS-assigned port) on `EACCES` or `EADDRINUSE`
+- Uses `http.Server{}` with `ReadHeaderTimeout` (Slowloris protection) and `IdleTimeout` (dead connection pruning). Absolute read/write timeouts are intentionally omitted to support WebSocket, SSE, and streaming workloads (see ADR-008).
 - Supports `Connection: Upgrade` for WebSocket pass-through (HMR, live reload)
 - Strips and re-sets `X-Forwarded-*` headers to prevent injection
 - Enforces loopback-only targets — routes can only point to `127.0.0.1:<port>`
@@ -101,6 +101,7 @@ type Target struct {
     ServiceName string
     Port        int
     URL         *url.URL
+    Type        RouteType
 }
 ```
 

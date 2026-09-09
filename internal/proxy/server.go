@@ -27,18 +27,15 @@ type Server struct {
 // NewServer creates a proxy server with the given configuration.
 // The resolver is used for Host header → backend target lookups.
 func NewServer(cfg config.ProxyConfig, resolver router.Resolver) *Server {
-	readTimeout := config.ParseDuration(cfg.Timeouts.Read, config.DefaultReadTimeout)
-	writeTimeout := config.ParseDuration(cfg.Timeouts.Write, config.DefaultWriteTimeout)
 	idleTimeout := config.ParseDuration(cfg.Timeouts.Idle, config.DefaultIdleTimeout)
 
 	handler := NewHandler(resolver)
 
 	return &Server{
 		httpServer: &http.Server{
-			Handler:      LoggingMiddleware(handler),
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
-			IdleTimeout:  idleTimeout,
+			Handler:           LoggingMiddleware(handler),
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       idleTimeout,
 		},
 		port:     cfg.Port,
 		fallback: 8080,
@@ -82,7 +79,7 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 	var lc net.ListenConfig
 
 	// Step 1: Try configured port.
-	addr := fmt.Sprintf(":%d", s.port)
+	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	listener, err := lc.Listen(ctx, "tcp", addr)
 	if err == nil {
 		return listener, addr, nil
@@ -97,7 +94,7 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 	}
 
 	// Step 2: Try fallback port.
-	addr = fmt.Sprintf(":%d", s.fallback)
+	addr = fmt.Sprintf("127.0.0.1:%d", s.fallback)
 	listener, err = lc.Listen(ctx, "tcp", addr)
 	if err == nil {
 		return listener, addr, nil

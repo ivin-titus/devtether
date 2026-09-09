@@ -1,4 +1,4 @@
-# DevTether
+# <img src=".assets/devtether_logo_transparent.png" height="48" align="center" alt="DevTether Logo" /> DevTether
 
 > **Single binary. Named domains. Zero hassle.**
 
@@ -12,8 +12,8 @@ localhost:8042                   db.localhost
 ```
 
 > [!WARNING]
-> **Project Status: Beta**
-> DevTether is currently in Beta. Engine 1 (Static Routing) is complete — its configuration schema, CLI API, and core architecture are stable. Breaking changes to these will only occur with strong consensus and will be logged in the [CHANGELOG](CHANGELOG.md). Engines 2–4 are pending implementation.
+> **Project Status: Beta**  
+> DevTether is currently in Beta. Engine 1 (Static Routing) is complete - its configuration schema, CLI API, and core architecture are stable. Breaking changes to these will only occur with strong consensus and will be logged in the [CHANGELOG](CHANGELOG.md). Engines 2–4 are pending implementation.
 
 ## Quick Start
 

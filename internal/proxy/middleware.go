@@ -44,6 +44,12 @@ func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
 	return size, err
 }
 
+// HeadersSent reports whether HTTP headers have already been written to the client.
+// Used by the ErrorHandler to detect mid-stream failures (ADR-008).
+func (lrw *loggingResponseWriter) HeadersSent() bool {
+	return lrw.wroteHeader
+}
+
 // Unwrap exposes the underlying http.ResponseWriter to http.ResponseController,
 // allowing standard library proxies to successfully hijack the connection for
 // WebSockets (e.g., Next.js HMR) without breaking byte-tracking middleware.
