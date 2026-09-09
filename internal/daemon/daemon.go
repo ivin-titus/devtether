@@ -17,9 +17,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/ivin-titus/devtether/internal/logger"
+	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
@@ -33,6 +35,11 @@ func CheckRunning(ctx context.Context) error {
 			_ = conn.Close()
 			return fmt.Errorf("daemon: already running on %s", socketPath)
 		}
+		// Permission denied = socket owned by another user. Don't mask it.
+		if netutil.IsPermissionError(dialErr) {
+			return fmt.Errorf("daemon: socket permission denied: %w", dialErr)
+		}
+		// Connection refused = stale socket from a dead process. Safe to proceed.
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("daemon: failed to pre-flight socket: %w", statErr)
 	}
@@ -89,14 +96,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	var lc net.ListenConfig
+	
+	// ADR-003: Atomic 0600 socket creation via umask — eliminates TOCTOU window.
+	oldUmask := syscall.Umask(0177)
 	listener, err := lc.Listen(ctx, "unix", s.socketPath)
+	syscall.Umask(oldUmask)
+	
 	if err != nil {
 		return fmt.Errorf("daemon: failed to bind unix socket: %w", err)
-	}
-
-	// Set restrictive permissions: owner-only read/write.
-	if err := os.Chmod(s.socketPath, 0600); err != nil {
-		logger.New("daemon").Error("failed to chmod socket", err)
 	}
 
 	mux := http.NewServeMux()
@@ -114,7 +121,8 @@ func (s *Server) Start(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = s.httpServer.Shutdown(shutdownCtx)
-		_ = os.Remove(s.socketPath)
+		// Socket cleanup handled by net.UnixListener.Close() and
+		// the pre-flight stale socket probe in Start().
 	}()
 
 	logger.New("daemon").Debug(fmt.Sprintf("ipc listening on %s", s.socketPath))
@@ -142,9 +150,9 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	routes := s.engine.GetAllRoutes()
 	response := make([]RouteResponse, 0, len(routes))
 
-	for domain, target := range routes {
+	for _, target := range routes {
 		response = append(response, RouteResponse{
-			Domain:      domain,
+			Domain:      target.Domain,
 			ServiceName: target.ServiceName,
 			Port:        target.Port,
 			Type:        string(target.Type),
