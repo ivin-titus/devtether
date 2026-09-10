@@ -16,6 +16,14 @@ This document defines the quality bar for all contributions — DRY, SoC, error
 handling, testing, security, naming, and more. CI enforces these rules
 automatically, so save yourself a round-trip and read them first.
 
+## AI Assistance & Liability
+
+We welcome contributions generated with the help of AI agents (e.g., Google AntiGravity, GitHub Copilot). However, you must adhere to our strict Human Accountability Policy (see [ADR-010](docs/adr/010-ai-contribution-liability.md)):
+
+1. **You are the Author:** AI agents are considered *tooling*. The human developer submitting the pull request assumes 100% legal, functional, and security liability for the code.
+2. **Mandatory Auditing:** All AI outputs must be audited against these engineering standards before being pushed. "The AI wrote it" is not a valid excuse for failing tests or violating project architecture.
+3. **Traceability:** When claiming a task in our workspace trackers, append the AI model you are using to your handle (e.g., `@github-username (via Agent:Model)`).
+
 ## How to Contribute
 
 ### 🐛 Reporting Bugs
@@ -42,7 +50,8 @@ Enhancement suggestions are tracked as GitHub issues. Include:
 
 1. Read [docs/engineering-standards.md](docs/engineering-standards.md)
 2. Read [docs/architecture.md](docs/architecture.md) for large features
-3. Check existing issues and PRs to avoid duplicate work
+3. Read [ADRs](./docs/adr/)
+4. Check existing issues and PRs to avoid duplicate work
 
 #### Development Setup
 

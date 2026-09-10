@@ -66,7 +66,7 @@ Adopt a **"Secure by Default, Permissive by Opt-in"** security model:
 
 This invariant must be validated against every feature before shipping.
 
-## Amendment (Phase 8.3)
+## Amendment
 **Date:** 2026-09-07
 
 The following constraints are added to reinforce the "Secure by Default" model at the network boundary:

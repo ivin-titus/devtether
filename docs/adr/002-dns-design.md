@@ -32,7 +32,7 @@ However, running a DNS server introduces significant security risks:
 - Developers must configure their OS resolver (e.g., `systemd-resolved`) to forward specific TLDs to `127.0.0.1:53`. This is a one-time setup step documented in the README.
 - In LAN mode, the DNS server is exposed to the local network, which is a deliberate and accepted tradeoff for the LAN sharing feature.
 
-## Amendment (Phase 8.3)
+## Amendment 
 **Date:** 2026-09-07
 
 The following constraints are added to fortify the DNS engine's stability and dual-stack compliance:

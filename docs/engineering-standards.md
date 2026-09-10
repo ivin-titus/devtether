@@ -15,11 +15,13 @@ The codebase follows patterns found in production Go infrastructure (Kubernetes,
 etcd, CoreDNS): clean interfaces, explicit error handling, `errgroup`-based
 lifecycle management, and documented ADRs. New code must match this bar.
 
-### 2. No AI Slop
+### 2. No AI Slop & Mandatory Auditing
 
 No boilerplate-heavy, over-abstracted, or "just in case" code. Every function,
 type, and file must earn its existence. If it doesn't solve a concrete problem,
 it doesn't ship.
+
+**AI Liability:** We welcome AI-assisted contributions, but per [ADR-010](adr/010-ai-contribution-liability.md), the human developer bears 100% liability for the code. You must rigorously audit all AI outputs against these standards before pushing. "The AI generated it" is an unacceptable excuse for failing CI or breaking architectural boundaries.
 
 ### 3. No Patchwork
 
@@ -49,6 +51,7 @@ impressed by cleverness, but by clarity, correctness, and restraint.
 - **DRY does NOT mean premature abstraction.** Two lines that look similar but
   serve different purposes are fine. DRY applies to **logic and intent**, not
   surface syntax.
+- **Static Asset Embedding:** When serving embedded UI assets (HTML, PNGs) from the Go binary via `//go:embed`, never duplicate raw Base64 strings in HTML. Encode the asset at `init()`, and use `strings.ReplaceAll` to burn it directly into the raw HTML string *before* calling `template.Parse()`. This guarantees zero runtime payload passing and strictly enforces DRY.
 
 ---
 
@@ -206,6 +209,7 @@ While 100% coverage is the long-term goal, current test coverage prioritizes cor
   not `configs`, `routers`, `proxies`.
 - **Godoc on all exported symbols.** Every exported function, type, and constant
   must have a doc comment starting with its name.
+- **Permanent Terminology Only.** Never use ephemeral sprint/release terminology (e.g., "Phase 1", "Phase 2") in code comments, godocs, or public-facing documentation (like ADRs or `architecture.md`). "Phase" terminology is strictly scoped to `docs/workspace/` (ephemeral release planning). Use permanent architectural terms instead, such as "Engine 1", "Layer 1", "DNS Engine", or "Proxy Layer".
 
 ---
 

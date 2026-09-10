@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-During early iterations of the reverse proxy (Phases 1-7), HTTP middleware (like custom `ErrorHandler` and logging) failed to properly track the lifecycle of the underlying `http.ResponseWriter`.
+During early iterations of the reverse proxy, HTTP middleware (like custom `ErrorHandler` and logging) failed to properly track the lifecycle of the underlying `http.ResponseWriter`.
 Specifically, if a backend streamed a chunked response but crashed mid-stream:
 1. The proxy caught the `io.EOF`.
 2. Our custom `ErrorHandler` attempted to render an HTML 502 page and invoked `w.WriteHeader(502)`.

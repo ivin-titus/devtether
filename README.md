@@ -1,4 +1,4 @@
-# <img src=".assets/devtether_logo_transparent.png" height="48" align="center" alt="DevTether Logo" /> DevTether
+# <img src=".assets/devtether_logo.png" height="48" align="center" alt="DevTether Logo" /> DevTether
 
 > **Single binary. Named domains. Zero hassle.**
 

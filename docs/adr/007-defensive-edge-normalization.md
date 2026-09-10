@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-During the extensive Phase 1-7 audit, we discovered multiple edge cases where the routing engine, DNS engine, and proxy engine disagreed on string normalization for network identifiers (Domains, Host headers, and IP addresses). 
+During an extensive audit, we discovered multiple edge cases where the routing engine, DNS engine, and proxy engine disagreed on string normalization for network identifiers (Domains, Host headers, and IP addresses). 
 Specific vulnerabilities included:
 - **Trailing Dots:** A domain inserted with a trailing dot (e.g., `api.localhost.`) failed to match because `AddRoute` didn't strip it, while the proxy did.
 - **IPv6 Literals:** `net.SplitHostPort("[::1]")` returns an error if no port is present, causing the proxy to retain brackets, while the router expected bare IPs (`::1`).
