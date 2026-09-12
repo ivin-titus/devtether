@@ -1,5 +1,5 @@
 # Release v2.0.0-beta.6
-**Status:** In Progress
+**Status:** Completed
 **Target:** 09/10/2026
 
 ## Active Tasks

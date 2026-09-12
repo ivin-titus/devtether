@@ -4,6 +4,24 @@ All notable changes to DevTether are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [v2.0.0-beta.6] — 2026-09-12
+
+### Added
+- **AI Accountability Framework:** Introduced `ADR-010` establishing strict human liability for all AI-generated code.
+- **Agent Skill Standardization:** Formally documented workflows in `docs/workspace/agent-skills/` including the "Ponytail" rule to ban over-engineering and AI slop.
+- **Dynamic Theming:** Error overlays (404, 502) now adapt gracefully to the user's OS dark/light mode preference via native CSS variables.
+- **Branding:** The DevTether logo is now embedded via `//go:embed` and injected safely into HTML at compile-time to maintain the single-binary architecture without DRY violations.
+- **Edge Normalization:** Extracted host normalization into `internal/netutil` to centralize IPv6 brackets and trailing dot logic, fulfilling ADR-007.
+
+### Fixed
+- **Proxy Loop Protection:** The `devtether init` default configuration now avoids port 8080 to prevent proxy loopbacks on unprivileged systems.
+- **Daemon IPC Masking:** Patched `devtether routes` to reliably bubble up fatal configuration errors instead of hiding them behind a false-positive daemon offline state.
+- **Zombie Process Handling:** Added `signal.Stop()` to the daemon shutdown routine, ensuring subsequent `SIGINT` signals correctly force-terminate a stalled process.
+- **DNS Hot Path:** Replaced string-based `dns.NewRR` resource record generation with native `&dns.A{}` struct instantiation, reducing CPU cycles under heavy load.
+- **ANSI Terminal Corruption:** Adopted `golang.org/x/term` across both core logging and CLI startup sequences. Prevents ANSI color codes from bleeding into redirected logs while preserving the interactive UI.
+- **Deterministic Output:** `devtether routes` now sorts domains alphabetically for consistent output across invocations.
+- **CLI Configuration Override:** IPC daemon lookup is now explicitly bypassed if the `--config` flag is passed to the CLI.
+
 ## [v2.0.0-beta.5] — 2026-09-09
 
 ### Added
