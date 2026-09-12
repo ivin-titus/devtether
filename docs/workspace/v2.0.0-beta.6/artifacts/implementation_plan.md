@@ -30,6 +30,12 @@
 - **Step 5 (CSP Whitelist):** Add `img-src 'self' data:;` to the `<meta http-equiv="Content-Security-Policy">` tag to prevent the browser from strictly blocking the embedded `data:` image URI.
 - **Step 6 (Terminology Cleanup):** Scrub all code comments, godocs, and configuration examples (`full-config.yaml`, `config.go`, `router.go`, `middleware.go`) of any ephemeral release terminology like "Phase X". Enforce this in `engineering-standards.md`.
 
+## Phase 1.5: AI Workforce Standardization
+### Subphase 1.5.A: Bulletproof Agent Execution Context
+- **Step 1:** Create `docs/workspace/agent-skills/ponytail/SKILL.md` to define the "Lazy Senior Dev" (YAGNI, Native Tools, Standard Library) mindset.
+- **Step 2:** Link the `ponytail` skill globally across `AGENTS.md`, `devtether-change`, and `devtether-audit` to enforce minimal step sizes and ban AI slop.
+- **Step 3:** Introduce the **Anti-Guessing Rule** to `AGENTS.md` and mandate strict compliance with `docs/workspace/README.md` artifact templates across all subagents.
+
 ## Phase 2: CLI UX & Daemon Fallback Logic
 ### Subphase 2.A: Initialization Configurations
 - **Step 1:** Change the commented default generated configuration in `internal/cli/init.go` from `api.localhost: 8080` to `api.localhost: 3000`. This prevents an infinite proxy loop when a user runs the daemon unprivileged and it falls back to port `8080`.

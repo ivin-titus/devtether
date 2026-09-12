@@ -10,6 +10,11 @@
   *Priority:* Critical
   *Description:* Draft ADR-010 for AI Liability, update CONTRIBUTING.md with AI rules, expand engineering standards for mandatory auditing, and scaffold the in-repo Workspace architecture to manage multi-agent development. (Completed)
 
+- [x] **[Chore] Bulletproof AI Agent Skills & Philosophy (Lazy Senior Dev)**
+  *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)`
+  *Priority:* High
+  *Description:* Import the 'Lazy Senior Dev / YAGNI' philosophy as a `ponytail` skill. Overhaul `AGENTS.md` and standard workflow skills to enforce minimal step sizes, ban shell scripts for I/O, mandate test coverage checks, and enforce native artifact templates.
+
 - [ ] **[Bug Fix] Proxy Loop 404 on Init Default Config**
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* High 
