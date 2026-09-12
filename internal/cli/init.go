@@ -25,7 +25,7 @@ const defaultConfig = `# DevTether Configuration
 
 routes:
   # myapp.localhost: 3000
-  # api.localhost: 8080
+  # api.localhost: 8000
 `
 
 func runInit(cmd *cobra.Command, args []string) error {

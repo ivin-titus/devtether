@@ -7,9 +7,9 @@
 
 The DevTether audit identified a set of security, reliability, protocol, concurrency, testing, observability, and initialization issues across the DNS engine, reverse proxy, router, daemon/IPC layer, CLI, logging, and test suite.
 
-The audit covered the codebase state around commit `777af1f` together with the associated uncommitted modifications and reference engineering documents. The majority of higher-severity findings were subsequently marked resolved in the source audit, while several lower-priority architectural and UX issues remain deferred. The remaining explicitly unresolved findings include IPv6 bracket normalization, zombie signal handling, ANSI corruption in logging, silent IPC error masking, non-deterministic CLI output, DNS record construction inefficiency, loss of log severity context, the `--config` behavior of `devtether routes`, and the default-config proxy loop.
+The audit covered the codebase state around commit `777af1f` together with the associated uncommitted modifications and reference engineering documents. The majority of higher-severity findings were subsequently marked resolved in the source audit, while several lower-priority architectural and UX issues remain deferred. Following the completion of Phase 2, the remaining explicitly unresolved findings include IPv6 bracket normalization, ANSI corruption in logging, DNS record construction inefficiency, and loss of log severity context.
 
-The core implementation was assessed as generally resilient, with the audit concluding that the principal remaining concerns are edge-case host normalization, test-suite fragility, lifecycle behavior, logging quality, and the default initialization path.
+The core implementation was assessed as generally resilient, with the audit concluding that the principal remaining concerns are edge-case host normalization, logging quality, and DNS parsing efficiency.
 
 The public repository describes DevTether as a Linux-oriented, modular developer networking toolkit built around static routing, a DNS engine, reverse proxy, and Unix-domain-socket IPC daemon, with additional orchestration, tunneling, and access-control engines planned.
 
@@ -115,8 +115,8 @@ The audit source reports:
 ### Finding 10: Inconsistent IPv6 Bracket Normalization in Proxy
 
 - **Severity:** Medium
-- **Location:** `internal/proxy/handler.go:210` (`sanitizeHost`)
-- **Status:** Not fully fixed in `v2.0.0-beta.4`; fixing
+- **Location:** `internal/proxy/handler.go` (`netutil.NormalizeHost`)
+- **Status:** Resolved in Phase 1
 - **Description:** `net.SplitHostPort("[::1]:8080")` returns the IPv6 address without brackets, while `net.SplitHostPort("[::1]")` fails with a missing-port error. The fallback path consequently preserves brackets for the second case, producing inconsistent host normalization depending on whether a port appears in the Host header.
 - **Impact:** Edge-case IPv6 routes may resolve successfully for one Host-header form and return 404 for another.
 - **Remediation Plan:** Normalize IPv6 brackets independently of the presence of a port, including explicit bracket stripping after host/port parsing or equivalent robust host normalization.
@@ -134,7 +134,7 @@ The audit source reports:
 
 - **Severity:** Medium
 - **Location:** `internal/cli/up.go:128` (signal goroutine)
-- **Status:** Deferred
+- **Status:** Resolved in Phase 2
 - **Description:** The signal handler catches `SIGINT`/`SIGTERM`, initiates cancellation, imposes a five-second shutdown deadline, and then exits without calling `signal.Stop(sigCh)`. Because `signal.Notify` has overridden the default behavior, subsequent `Ctrl+C` signals can be delivered to an abandoned channel rather than restoring default termination semantics.
 - **Impact:** Repeated `Ctrl+C` presses may fail to terminate a stalled process immediately, potentially forcing the user to wait or use `kill -9`.
 - **Remediation Plan:** Stop signal notification immediately after the first signal is handled so subsequent signals can invoke normal operating-system termination behavior.
@@ -197,7 +197,7 @@ The audit source reports:
 
 - **Severity:** Low
 - **Location:** `internal/cli/routes.go:30` (`runRoutes`)
-- **Status:** Deferred
+- **Status:** Resolved in Phase 2
 - **Description:** `runRoutes` attempts to retrieve active routes through the daemon, but treats any IPC error as evidence that the daemon is not running and falls back to reading the configuration file.
   ```go
   routes, err := client.ListRoutes()
@@ -214,7 +214,7 @@ The audit source reports:
 
 - **Severity:** Low
 - **Location:** `internal/cli/routes.go:54` (`runRoutes`); `internal/daemon/daemon.go:143`
-- **Status:** Deferred
+- **Status:** Resolved in Phase 2
 - **Description:** Route responses are generated from maps without sorting. Go map iteration order is intentionally non-deterministic, so route listings can appear in a different order across invocations.
 - **Impact:** Inconsistent CLI output violates the project's deterministic-output engineering standard and complicates snapshots, scripts, and user expectations.
 - **Remediation Plan:** Sort route responses by `Domain` before returning or printing them.
@@ -244,7 +244,7 @@ The audit source reports:
 
 - **Severity:** Low
 - **Location:** `internal/cli/routes.go:28` (`runRoutes`)
-- **Status:** Deferred
+- **Status:** Resolved in Phase 2
 - **Description:** `devtether routes --config /path/to/other.yaml` can still prefer the running daemon and return the daemon's active routes instead of the routes from the explicitly requested configuration file.
   ```go
   // Try the daemon first.
@@ -267,7 +267,7 @@ The audit source reports:
 
 - **Severity:** High
 - **Location:** `internal/cli/init.go:28` (`defaultConfig`); `internal/proxy/handler.go:114` (`ServeHTTP`)
-- **Status:** Deferred
+- **Status:** Resolved in Phase 2
 - **Description:** When DevTether cannot bind its preferred privileged port and falls back to port `8080`, `devtether init` can generate a default route such as `api.localhost:8080`. That route points to `127.0.0.1:8080`, which is itself the DevTether proxy. The forwarded request re-enters the proxy with `Host: 127.0.0.1:8080`; host sanitization removes the port, and the router cannot resolve `127.0.0.1`. The request consequently receives a 404. Meanwhile, the health check can still mark the backend as online because the proxy itself is listening on the target port.
 - **Impact:** The generated default configuration can produce an apparently healthy route that actually loops back into DevTether and fails with 404, creating a broken first-run experience on systems where port 80 requires elevated privileges.
 - **Remediation Plan:** Change the generated default route to use a port outside DevTether's fallback chain, such as `8081` or `3000`, and consider adding explicit proxy-loop detection.

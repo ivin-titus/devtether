@@ -15,7 +15,7 @@
   *Priority:* High
   *Description:* Import the 'Lazy Senior Dev / YAGNI' philosophy as a `ponytail` skill. Overhaul `AGENTS.md` and standard workflow skills to enforce minimal step sizes, ban shell scripts for I/O, mandate test coverage checks, and enforce native artifact templates.
 
-- [ ] **[Bug Fix] Proxy Loop 404 on Init Default Config**
+- [x] **[Bug Fix] Proxy Loop 404 on Init Default Config**
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* High 
   *Description:* Change the default generated proxy route in `init.go` to `api.localhost: 3000` to prevent an infinite loop when the daemon runs unprivileged and falls back to port `8080`. 
@@ -35,7 +35,7 @@
   *Priority:* Medium 
   *Description:* Robustly strip IPv6 brackets using `strings.TrimPrefix` and `strings.TrimSuffix` in `sanitizeHost` to guarantee a normalized `::1` format for the routing engine.
 
-- [ ] **[Bug Fix] Zombie Signal Handler (Unkillable Process)**  
+- [x] **[Bug Fix] Zombie Signal Handler (Unkillable Process)**  
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)`  
   *Priority:* Medium  
   *Description:* Call `signal.Stop(sigCh)` immediately after trapping the first `SIGTERM`/`SIGINT` so subsequent interrupts invoke default OS termination. 
@@ -47,13 +47,13 @@
   *Description:* Import `golang.org/x/term` and use `term.IsTerminal` to strip `\033[90m` ANSI color codes if the output is redirected to a file or pipe. 
 
 
-- [ ] **[Bug Fix] Silent Masking of Daemon IPC Errors**  
+- [x] **[Bug Fix] Silent Masking of Daemon IPC Errors**  
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Low 
   *Description:* In `runRoutes`, only fall back to reading `devtether.yaml` if the error from `client.ListRoutes()` explicitly indicates the daemon isn't reachable (e.g. `ECONNREFUSED` or `os.ErrNotExist`). 
 
 
-- [ ] **[Bug Fix] Non-Deterministic Output (`devtether routes`)** 
+- [x] **[Bug Fix] Non-Deterministic Output (`devtether routes`)** 
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Low 
   *Description:* Sort the `configRoutes` array alphabetically by `Domain` before printing it to guarantee deterministic output on every run. 
@@ -71,7 +71,7 @@
   *Description:* In `devHandler`, check if `r.Level >= slog.LevelWarn` and explicitly prepend `ERROR: ` or `WARN: ` to the standard output message. 
 
 
-- [ ] **[Bug Fix] `--config` Flag Silently Ignored** 
+- [x] **[Bug Fix] `--config` Flag Silently Ignored** 
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Low 
   *Description:* Bypass the IPC daemon check entirely if `cmd.Flags().Changed("config")` is true. 

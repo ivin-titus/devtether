@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/ivin-titus/devtether/internal/config"
@@ -24,15 +26,26 @@ Otherwise, reads routes directly from devtether.yaml.`,
 }
 
 func runRoutes(cmd *cobra.Command, args []string) error {
-	// Try the daemon first.
-	client := daemon.NewClient()
-	routes, err := client.ListRoutes()
-	if err == nil {
-		printRoutes(routes)
-		return nil
+	// If --config is passed, skip daemon check completely.
+	if !cmd.Flags().Changed("config") {
+		// Try the daemon first.
+		client := daemon.NewClient()
+		routes, err := client.ListRoutes()
+		if err == nil {
+			sort.Slice(routes, func(i, j int) bool {
+				return routes[i].Domain < routes[j].Domain
+			})
+			printRoutes(routes)
+			return nil
+		}
+
+		// Only fall back to reading config file if daemon is unreachable.
+		if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 
-	// Daemon not running — fall back to reading config file.
+	// Daemon not running or config flag passed — fall back to reading config file.
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		// errors.Is unwraps through fmt.Errorf %w chains.
@@ -59,6 +72,9 @@ func runRoutes(cmd *cobra.Command, args []string) error {
 			Type:        "static",
 		})
 	}
+	sort.Slice(configRoutes, func(i, j int) bool {
+		return configRoutes[i].Domain < configRoutes[j].Domain
+	})
 	printRoutes(configRoutes)
 	return nil
 }

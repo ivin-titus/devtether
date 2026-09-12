@@ -35,3 +35,11 @@ Starting execution of v2.0.0-beta.6 Polish & Stability Patch (Fixing 9 deferred 
 - Fixed CSP (`img-src 'self' data:;`) to allow embedded UI assets without opening security holes.
 - Enforced ADR-007 strictly by extracting Edge Normalization into `internal/netutil` and utilizing clean `errors.As` logic (Zero AI Slop).
 - Enforced engineering standards across `docs/engineering-standards.md` mandating the new Base64 parse-time templating pattern.
+
+## Dump: 2026-09-12 17:57
+**Phase 1.5 & Phase 2 Completed:**
+- Established `ponytail` skill to mathematically ban AI slop and enforced strict engineering/artifact standard compliance via `AGENTS.md`.
+- `init.go`: Reconfigured default proxy binding to port 3000 to prevent proxy infinite loops during unprivileged startup.
+- `routes.go`: Patched the IPC fallback to properly mask `syscall.ECONNREFUSED` and `os.ErrNotExist` without dropping fatal router errors. Included explicit `--config` flag IPC bypass.
+- `up.go`: Solved the unkillable proxy zombie state by correctly triggering `signal.Stop()` inside the OS interrupt handler event loop.
+- Verification: `make test` successfully validated all module integrity, race conditions, and Go build compilation.

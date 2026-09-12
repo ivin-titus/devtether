@@ -131,6 +131,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 		select {
 		case sig := <-sigCh:
 			log.Info(fmt.Sprintf("received %v, shutting down...", sig))
+			signal.Stop(sigCh)
 			cancel()
 			// Hard deadline: force exit if graceful shutdown hangs.
 			time.AfterFunc(5*time.Second, func() {
