@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httputil"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/ivin-titus/devtether/internal/logger"
+	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
@@ -111,7 +110,7 @@ func NewHandler(resolver router.Resolver) *Handler {
 // ServeHTTP routes incoming HTTP requests to the correct backend
 // based on the Host header.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	host := sanitizeHost(r.Host)
+	host := netutil.NormalizeHost(r.Host)
 
 	if host == "" {
 		renderErrorPage(w, http.StatusBadRequest, ErrorPageData{
@@ -200,26 +199,3 @@ func renderErrorPage(w http.ResponseWriter, statusCode int, data ErrorPageData) 
 	}
 }
 
-// sanitizeHost strips the port suffix from a Host header value and
-// validates that it is not empty or malicious.
-// Example: "portfolio.localhost:8080" → "portfolio.localhost"
-func sanitizeHost(host string) string {
-	// Strip port suffix if present safely (handles IPv6).
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return ""
-	}
-
-	// Ensure IPv6 literals without ports don't retain brackets.
-	host = strings.TrimPrefix(host, "[")
-	host = strings.TrimSuffix(host, "]")
-
-	// Sync DNS and Proxy FQDN stripping: remove trailing dot.
-	host = strings.TrimSuffix(host, ".")
-
-	return strings.ToLower(host)
-}

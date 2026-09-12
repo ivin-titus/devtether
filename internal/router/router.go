@@ -6,8 +6,9 @@ package router
 import (
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
+
+	"github.com/ivin-titus/devtether/internal/netutil"
 )
 
 // RouteType identifies how a route was registered.
@@ -17,7 +18,7 @@ const (
 	// RouteStatic is a route defined in the "routes:" config section.
 	RouteStatic RouteType = "static"
 
-	// RouteOrchestrated is a route managed by the orchestration engine (Phase 2).
+	// RouteOrchestrated is a route managed by the orchestration engine
 	RouteOrchestrated RouteType = "orchestrated"
 )
 
@@ -60,7 +61,7 @@ func NewEngine() *Engine {
 
 // AddRoute maps an incoming domain to a local port with the given route type.
 func (e *Engine) AddRoute(domain, serviceName string, port int, routeType RouteType) error {
-	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	domain = netutil.NormalizeHost(domain)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

@@ -138,7 +138,7 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	matched := false
 	for _, q := range m.Question {
 		// DNS names are FQDN with trailing dot — strip it for lookup.
-		name := strings.TrimSuffix(strings.ToLower(q.Name), ".")
+		name := netutil.NormalizeHost(q.Name)
 
 		if !s.matchesTLD(name) {
 			continue

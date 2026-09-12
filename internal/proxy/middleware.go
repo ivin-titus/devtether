@@ -83,7 +83,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			cleanPath += "?" + sanitize(r.URL.RawQuery)
 		}
 
-		// Subphase 1.7: Smart Framework Noise Filter
+		// Smart Framework Noise Filter
 		logLvl := "INFO"
 		if lrw.statusCode >= 500 {
 			logLvl = "ERROR"

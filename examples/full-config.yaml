@@ -9,7 +9,7 @@ routes:
   portfolio.localhost: 3222
   api.localhost: 8042
 
-# ─── Engine 2: Process Orchestration (coming in Phase 2) ────────
+# ─── Engine 2: Process Orchestration ────────
 # orchestrate:
 #   api:
 #     domain: api.localhost
@@ -19,12 +19,12 @@ routes:
 #       DATABASE_URL: postgres://localhost/dev
 #     restart: on-failure
 
-# ─── Engine 3: Tunneling (coming in Phase 3-4) ──────────────────
+# ─── Engine 3: Tunneling ──────────────────
 # tunnel:
 #   lan: true                           # Expose services on LAN via mDNS
 #   relay: dev.yourcompany.com          # Self-hosted WAN relay
 
-# ─── Engine 4: Access Control (coming in Phase 5) ───────────────
+# ─── Engine 4: Access Control ───────────────
 # access:
 #   enabled: true
 #   require_token: ["api.*", "admin.*"]

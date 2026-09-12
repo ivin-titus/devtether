@@ -27,7 +27,7 @@ type Config struct {
 	DNS         DNSConfig                `yaml:"dns,omitempty"`
 }
 
-// ServiceConfig defines an orchestrated service (Engine 2, Phase 2).
+// ServiceConfig defines an orchestrated service (Engine 2).
 type ServiceConfig struct {
 	Domain  string            `yaml:"domain"`
 	Command string            `yaml:"command"`
@@ -36,13 +36,13 @@ type ServiceConfig struct {
 	Restart string            `yaml:"restart,omitempty"`
 }
 
-// TunnelConfig defines tunneling options (Engine 3, Phase 3-4).
+// TunnelConfig defines tunneling options (Engine 3).
 type TunnelConfig struct {
 	LAN   bool   `yaml:"lan,omitempty"`
 	Relay string `yaml:"relay,omitempty"`
 }
 
-// AccessConfig defines RBAC rules (Engine 4, Phase 5).
+// AccessConfig defines RBAC rules (Engine 4).
 type AccessConfig struct {
 	Enabled      bool     `yaml:"enabled,omitempty"`
 	RequireToken []string `yaml:"require_token,omitempty"`
@@ -188,13 +188,13 @@ func (c *Config) validateRoutes() error {
 // yet implemented. Explicit is better than silent.
 func (c *Config) validateUnimplemented() error {
 	if len(c.Orchestrate) > 0 {
-		return fmt.Errorf("'orchestrate:' engine is not yet implemented (coming in Phase 2). Remove this section to proceed")
+		return fmt.Errorf("'orchestrate:' engine is not yet implemented. Remove this section to proceed")
 	}
 	if c.Tunnel != nil {
-		return fmt.Errorf("'tunnel:' engine is not yet implemented (coming in Phase 3). Remove this section to proceed")
+		return fmt.Errorf("'tunnel:' engine is not yet implemented. Remove this section to proceed")
 	}
 	if c.Access != nil {
-		return fmt.Errorf("'access:' engine is not yet implemented (coming in Phase 5). Remove this section to proceed")
+		return fmt.Errorf("'access:' engine is not yet implemented. Remove this section to proceed")
 	}
 	return nil
 }
