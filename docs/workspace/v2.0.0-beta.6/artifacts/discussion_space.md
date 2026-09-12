@@ -76,3 +76,27 @@ Based on `Project-Yuki/PONYTAIL_LITE.md`, `ivin-lab/AGENTS.md`, and `Hori-Z/AGEN
 
 ### 4. Resolution
 *Pending user review of these proposed additions.*
+
+---
+
+## Discussion: Phase 3 Dynamic UI ANSI Corruption (Finding 25)
+
+### 1. Problem Statement
+During Phase 3, we successfully stripped ANSI escape codes from the core logging engine (`logger.go`) by using the `os.Stdout.Stat()` char device check. However, the `devtether up` startup sequence (`internal/cli/up.go`) contains a "Dynamic UI" that prints hardcoded `\033[90m` escape sequences directly to `os.Stdout` via `fmt.Printf`, bypassing the logger entirely. This causes ANSI pollution in redirected files.
+
+### 2. Proposed Solutions
+* **Initial Proposal (The "Ponytail" Strategy - REJECTED):** Define the ANSI sequences as local variables and check `os.Stdout.Stat()` (standard library char device check) to avoid external dependencies.
+* **Standards-Compliant Solution (ACCEPTED):** Import `golang.org/x/term` and use `term.IsTerminal(int(os.Stdout.Fd()))`. Define the ANSI sequences as local variables in `up.go` and clear them if `term.IsTerminal` is false.
+
+### 2.1. Technical Breakdown: How TTY Detection Prevents File Corruption
+When a Go program executes, its standard output (`os.Stdout`) is assigned File Descriptor 1 (FD 1). 
+1. **Interactive Mode:** If the user runs `devtether up` directly in a terminal, the operating system connects FD 1 to a pseudo-terminal (PTY). The `term.IsTerminal` function queries the OS (`ioctl` on Unix, `GetConsoleMode` on Windows) and returns `true`. The ANSI variables remain populated, and the UI renders in color.
+2. **Redirected/Daemon Mode:** If the output is redirected (`devtether up > log.txt`) or run by a background service manager (systemd), the OS connects FD 1 to a standard disk file or a pipe. `term.IsTerminal` queries the OS and returns `false`. We immediately reassign all color variables to empty strings (`dim = ""`), ensuring that no "random bits" (unprintable ANSI characters) are ever written to the disk.
+
+### 3. Open Questions & Edge Cases
+* **Wait, didn't we just remove `golang.org/x/term` from `logger.go` to be "Ponytail" compliant?** Yes, and that was a massive mistake. A subsequent audit of `docs/engineering-standards.md` revealed that the architecture *explicitly mandates* `golang.org/x/term` as the primary TTY check because it correctly handles Windows cross-platform edge cases (like MSYS/mintty) without CGO, whereas `os.ModeCharDevice` does not. 
+* **Was ADR-011 necessary to authorize bypassing the logger for CLI UI?** No. `engineering-standards.md` already explicitly states that CLI output formatting belongs in the presentation layer and mandates the `x/term` check for UI colors. ADR-011 was deleted as redundant AI slop.
+
+### 4. Resolution
+1. Restore `golang.org/x/term` to `internal/logger/logger.go`.
+2. Implement the local ANSI variable strategy in `internal/cli/up.go`, using `term.IsTerminal` as the boolean toggle.

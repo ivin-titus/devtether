@@ -42,4 +42,10 @@ Starting execution of v2.0.0-beta.6 Polish & Stability Patch (Fixing 9 deferred 
 - `init.go`: Reconfigured default proxy binding to port 3000 to prevent proxy infinite loops during unprivileged startup.
 - `routes.go`: Patched the IPC fallback to properly mask `syscall.ECONNREFUSED` and `os.ErrNotExist` without dropping fatal router errors. Included explicit `--config` flag IPC bypass.
 - `up.go`: Solved the unkillable proxy zombie state by correctly triggering `signal.Stop()` inside the OS interrupt handler event loop.
-- Verification: `make test` successfully validated all module integrity, race conditions, and Go build compilation.
+## Dump: 2026-09-12 21:55
+**Phase 3 Diagnostics & Standards Correction:**
+- Completed Phase 3.A (DNS Hot Path optimization) and 3.B (Logging Severity Context).
+- Discovered that the initial attempt to use `os.ModeCharDevice` for ANSI stripping in `logger.go` to avoid dependencies was actually a violation of the explicit engineering standards, which mandate `golang.org/x/term` for cross-platform Windows compatibility.
+- Discovered that the Dynamic UI startup banner in `up.go` bypasses the core logger entirely, causing lingering ANSI corruption in redirected output.
+- Successfully verified that bypassing the core logger for CLI UI purposes is authorized under the Separation of Concerns and ANSI Logging sections of `docs/engineering-standards.md`, making the proposed `ADR-011` redundant (it was correctly deleted by the user).
+- **Corrective Action Planned (Phase 3.C):** Restore `golang.org/x/term` to `logger.go` to comply with standards. Apply the same `term.IsTerminal` logic natively to local ANSI variables inside the `up.go` startup sequence to fix the Dynamic UI without introducing complex logging wrappers.

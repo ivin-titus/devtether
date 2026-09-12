@@ -20,6 +20,7 @@ import (
 	"github.com/ivin-titus/devtether/internal/router"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/term"
 )
 
 func init() {
@@ -80,12 +81,17 @@ func runUp(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- DYNAMIC UI: STARTING ---
+	dim, reset := "\033[90m", "\033[0m"
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		dim, reset = "", ""
+	}
+
 	v := buildVersion
 	if v == "" {
 		v = "dev"
 	}
-	fmt.Printf("\n  DevTether \033[90m%s\033[0m\n\n", v)
-	fmt.Printf("  \033[90mStarting...\033[0m\r")
+	fmt.Printf("\n  DevTether %s%s%s\n\n", dim, v, reset)
+	fmt.Printf("  %sStarting...%s\r", dim, reset)
 
 	// 6. Synchronous Binds (DNS & Proxy).
 	// We bind before starting goroutines to flush any fallback logs
@@ -168,10 +174,15 @@ func isBackendOnline(ctx context.Context, port int) bool {
 
 func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr string) {
 	// --- DYNAMIC UI: STARTED ---
-	fmt.Printf("  \033[92mStarted\033[0m    \n")
+	dim, green, yellow, reset := "\033[90m", "\033[92m", "\033[33m", "\033[0m"
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		dim, green, yellow, reset = "", "", "", ""
+	}
+
+	fmt.Printf("  %sStarted%s    \n", green, reset)
 
 	if len(cfg.Routes) == 0 {
-		fmt.Println("\n  \033[33m○ No routes defined in devtether.yaml\033[0m")
+		fmt.Printf("\n  %s○ No routes defined in devtether.yaml%s\n", yellow, reset)
 		fmt.Println("    Create one with: devtether init")
 		fmt.Println()
 		return
@@ -181,9 +192,9 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 	_, proxyPort, _ := net.SplitHostPort(proxyAddr)
 	if proxyPort != "80" {
 		if runtime.GOOS == "linux" {
-			fmt.Printf("  \033[90m> Note: devtether fell back to port %s due to lack of root access or missing setcap settings.\033[0m\n", proxyPort)
+			fmt.Printf("  %s> Note: devtether fell back to port %s due to lack of root access or missing setcap settings.%s\n", dim, proxyPort, reset)
 		} else {
-			fmt.Printf("  \033[90m> Note: devtether fell back to port %s due to lack of administrative privileges.\033[0m\n", proxyPort)
+			fmt.Printf("  %s> Note: devtether fell back to port %s due to lack of administrative privileges.%s\n", dim, proxyPort, reset)
 		}
 	}
 	fmt.Println()
@@ -218,7 +229,7 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 		if proxyPort != "80" {
 			url = fmt.Sprintf("http://%s:%s", domain, proxyPort)
 		}
-		fmt.Printf("  %-*s  %-*s  \033[90m→ :%d\033[0m\n", maxDomainLen, domain, maxUrlLen, url, port)
+		fmt.Printf("  %-*s  %-*s  %s→ :%d%s\n", maxDomainLen, domain, maxUrlLen, url, dim, port, reset)
 	}
 	fmt.Println()
 

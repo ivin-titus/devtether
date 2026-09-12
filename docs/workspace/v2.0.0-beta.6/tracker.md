@@ -41,7 +41,7 @@
   *Description:* Call `signal.Stop(sigCh)` immediately after trapping the first `SIGTERM`/`SIGINT` so subsequent interrupts invoke default OS termination. 
 
 
-- [ ] **[Bug Fix] Hardcoded ANSI Corruption in Logging** 
+- [x] **[Bug Fix] Hardcoded ANSI Corruption in Logging** 
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Medium 
   *Description:* Import `golang.org/x/term` and use `term.IsTerminal` to strip `\033[90m` ANSI color codes if the output is redirected to a file or pipe. 
@@ -59,16 +59,21 @@
   *Description:* Sort the `configRoutes` array alphabetically by `Domain` before printing it to guarantee deterministic output on every run. 
 
 
-- [ ] **[Bug Fix] Inefficient DNS Record Parser**
+- [x] **[Bug Fix] Inefficient DNS Record Parser**
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Low 
   *Description:* Replace the slow string-parsing `dns.NewRR` logic with direct struct instantiation `&dns.A{...}` on the hot path. 
 
 
-- [ ] **[Bug Fix] Loss of Error Severity Context** 
+- [x] **[Bug Fix] Loss of Error Severity Context** 
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Low 
   *Description:* In `devHandler`, check if `r.Level >= slog.LevelWarn` and explicitly prepend `ERROR: ` or `WARN: ` to the standard output message. 
+
+- [x] **[Bug Fix] Phase 3.C: Dynamic UI ANSI Bypass** 
+  *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
+  *Priority:* Medium 
+  *Description:* Define ANSI color sequences as variables in `internal/cli/up.go`. Reassign them to empty strings `""` if `os.Stdout.Stat()` detects a non-character device.
 
 
 - [x] **[Bug Fix] `--config` Flag Silently Ignored** 
@@ -77,7 +82,7 @@
   *Description:* Bypass the IPC daemon check entirely if `cmd.Flags().Changed("config")` is true. 
 
 
-- [ ] **[Feature] Error Page UI Polish & System Theming** 
+- [x] **[Feature] Error Page UI Polish & System Theming** 
   *Assignee:* `@ivin-titus (via AntiGravity: Gemini 3.1 Pro)` 
   *Priority:* Medium 
   *Description:* Embed `.assets/devtether_logo.png` via Base64 into the 404/502 HTML overlays and update CSS to use `@media (prefers-color-scheme)` for dynamic OS theming. 

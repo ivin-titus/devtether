@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 var outLog = log.New(os.Stdout, "", 0)
@@ -19,6 +21,11 @@ type devHandler struct {
 func (h *devHandler) Handle(ctx context.Context, r slog.Record) error {
 	if !h.verbose {
 		msg := r.Message
+		if r.Level >= slog.LevelError {
+			msg = "ERROR: " + msg
+		} else if r.Level >= slog.LevelWarn {
+			msg = "WARN: " + msg
+		}
 
 		var attrs []string
 		r.Attrs(func(a slog.Attr) bool {
@@ -27,7 +34,13 @@ func (h *devHandler) Handle(ctx context.Context, r slog.Record) error {
 		})
 
 		if len(attrs) > 0 {
-			msg = fmt.Sprintf("%s \033[90m(%s)\033[0m", msg, strings.Join(attrs, " "))
+			isTerm := term.IsTerminal(int(os.Stdout.Fd()))
+
+			if isTerm {
+				msg = fmt.Sprintf("%s \033[90m(%s)\033[0m", msg, strings.Join(attrs, " "))
+			} else {
+				msg = fmt.Sprintf("%s (%s)", msg, strings.Join(attrs, " "))
+			}
 		}
 
 		outLog.Println(msg)

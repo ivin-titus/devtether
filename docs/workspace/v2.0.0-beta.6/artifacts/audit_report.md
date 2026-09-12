@@ -143,7 +143,7 @@ The audit source reports:
 
 - **Severity:** Medium
 - **Location:** `internal/logger/logger.go:30` (`devHandler.Handle`)
-- **Status:** Deferred
+- **Status:** Resolved in Phase 3
 - **Description:** Non-verbose logging unconditionally embeds ANSI color escape sequences around structured attributes. Redirected output and background/service execution can therefore contain terminal control sequences even when no interactive terminal is present.
   ```go
   if len(attrs) > 0 {
@@ -223,7 +223,7 @@ The audit source reports:
 
 - **Severity:** Low
 - **Location:** `internal/dns/server.go:149`
-- **Status:** Deferred
+- **Status:** Resolved in Phase 3
 - **Description:** The DNS handler constructs a textual resource-record representation with `fmt.Sprintf` and then passes it through `dns.NewRR`, causing a full parser/lexer cycle for each incoming request.
   ```go
   rr, err := dns.NewRR(fmt.Sprintf("%s A 127.0.0.1", q.Name))
@@ -235,7 +235,7 @@ The audit source reports:
 
 - **Severity:** Low
 - **Location:** `internal/logger/logger.go:19` (`devHandler.Handle`)
-- **Status:** Deferred
+- **Status:** Resolved in Phase 3
 - **Description:** In non-verbose mode, the logger extracts the message and attributes but ignores `r.Level`. Error and warning messages can therefore appear visually equivalent to informational messages.
 - **Impact:** Important subsystem failures can be overlooked in normal terminal output.
 - **Remediation Plan:** Preserve warning/error severity in standard output through an explicit severity marker, suitable visual distinction, or routing of severe events to an appropriate error stream.
@@ -271,6 +271,15 @@ The audit source reports:
 - **Description:** When DevTether cannot bind its preferred privileged port and falls back to port `8080`, `devtether init` can generate a default route such as `api.localhost:8080`. That route points to `127.0.0.1:8080`, which is itself the DevTether proxy. The forwarded request re-enters the proxy with `Host: 127.0.0.1:8080`; host sanitization removes the port, and the router cannot resolve `127.0.0.1`. The request consequently receives a 404. Meanwhile, the health check can still mark the backend as online because the proxy itself is listening on the target port.
 - **Impact:** The generated default configuration can produce an apparently healthy route that actually loops back into DevTether and fails with 404, creating a broken first-run experience on systems where port 80 requires elevated privileges.
 - **Remediation Plan:** Change the generated default route to use a port outside DevTether's fallback chain, such as `8081` or `3000`, and consider adding explicit proxy-loop detection.
+
+### Finding 36: Dynamic UI CLI Bypasses Logger and Emits Hardcoded ANSI
+
+- **Severity:** Low
+- **Location:** `internal/cli/up.go:130` and `internal/cli/up.go:163`
+- **Status:** Resolved in Phase 3.C
+- **Description:** The core logger uses `os.ModeCharDevice` to strip ANSI escapes, which violates ADR-006 and the explicit engineering standards mandating `golang.org/x/term`. Furthermore, the `devtether up` command's startup sequence uses a "Dynamic UI" banner that directly prints `\033[90m` escape sequences to `os.Stdout` via `fmt.Printf`. This bypasses the logger entirely, resulting in ANSI corruption if the daemon's startup output is redirected to a file or a service manager.
+- **Impact:** Redirected daemon logs are polluted with non-printable characters. The current TTY check in `logger.go` is non-compliant with Windows terminal emulators.
+- **Remediation Plan:** Apply a standards-compliant strategy. Restore `golang.org/x/term` to `logger.go`. In the startup UI functions, define ANSI sequences as local variables, check `term.IsTerminal(int(os.Stdout.Fd()))`, and reassign the color variables to empty strings (`""`) if the output is not a terminal.
 
 ## 4. Resolved Findings
 
@@ -409,3 +418,17 @@ The audit record classifies findings by origin and action. Higher-severity archi
 **AUDIT HAS FINDINGS**
 
 The reviewed DevTether implementation was assessed as highly resilient overall, but the audit identified remaining concerns around IPv6 host normalization, deferred signal and logging behavior, CLI error handling and determinism, DNS hot-path efficiency, and the proxy loop created by the generated fallback configuration. The source audit's final conclusion specifically highlights IPv6 normalization, `os.Pipe`-related test fragility, and proxy target-resolution redundancy as areas requiring attention to guarantee strict behavioral contracts.
+
+## 11. Memory Audit (Ad-Hoc Request)
+
+A targeted deep-dive audit was conducted to investigate a reported memory spike (2MB → 6MB) during active web browsing across multiple active and 404 routes.
+
+**Findings:**
+- **Zero active memory leaks detected.** The codebase strictly bounds memory usage across all vectors.
+- **Proxy Cache Bounding:** The `throttleCache` in `handler.go` employs a hard limit of 1024 entries. Unbounded cache growth is mathematically impossible, even under a 404 DoS flood.
+- **Template Recompilation:** Error pages are generated at compile-time using `//go:embed` and parsed exactly once in `init()`. Render time `Execute()` streams directly to the `ResponseWriter` without allocating large intermediary string buffers.
+- **IPC Leaks:** `internal/daemon/client.go` properly utilizes `defer resp.Body.Close()`.
+- **Router Targets:** `internal/router/router.go` performs deep copies of `url.URL` pointers (`u := *t.URL`), preventing reference-retention leaks.
+
+**Conclusion (Normal Go GC Behavior):**
+A memory footprint expanding from 2MB to 6MB under active load is expected standard behavior for the Go runtime. `httputil.ReverseProxy` pre-allocates 32KB I/O copy buffers per active connection, and the `http.Transport` pool keeps connections alive to backends. Additionally, Go's Garbage Collector (`GOGC=100`) allows the heap to double before sweeping. The 6MB plateau represents normal operating buffers and idle keep-alives, not a leak.

@@ -55,6 +55,11 @@
 - **Step 1:** Replace the slow string-parsing `dns.NewRR` logic on the hot path in `internal/dns/server.go` (`handleRequest`) with direct, zero-allocation struct instantiation: `&dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET}, A: net.ParseIP("127.0.0.1")}`.
 
 ### Subphase 3.B: Standard Output Logging & ANSI Discipline
-- **Step 1:** Import `golang.org/x/term` and use `term.IsTerminal(int(os.Stdout.Fd()))` in `internal/logger/logger.go` (`devHandler.Handle`) to check if the output is a TTY. If it is redirected to a file or pipe, completely omit the `\033[90m` ANSI color codes to prevent log file corruption.
-- **Step 2:** In non-verbose mode in `internal/logger/logger.go` (`devHandler.Handle`), check `r.Level`. If it is `slog.LevelWarn` or higher, explicitly prepend a severity tag (e.g., `ERROR: `) to the standard output message so critical failures aren't mistaken for routine info logs.
-- **Step 3:** Pipe `devtether up` into a file and verify no ANSI escape codes are present.
+- **Step 1:** Import `golang.org/x/term` in `internal/logger/logger.go` to cleanly detect if the logger is running in a TTY via `term.IsTerminal(int(os.Stdout.Fd()))`. Apply `\033[90m` around structured attributes only if the check passes.
+- **Step 2:** Explicitly read `r.Level` inside `devHandler.Handle`. Prepend `ERROR:` or `WARN:` to the raw message if it meets or exceeds `slog.LevelWarn` to guarantee failure visibility when running in standard (non-verbose) mode.
+
+### Subphase 3.C: Dynamic UI ANSI Bypass (Standards Compliant)
+- **Step 1:** In `internal/cli/up.go`, define local variables for the ANSI codes (`dim`, `green`, `reset`, `yellow`) at the top of the startup rendering blocks.
+- **Step 2:** Import `golang.org/x/term` and execute `if !term.IsTerminal(int(os.Stdout.Fd()))`. If the check succeeds (it is NOT a terminal), reassign all color variables to `""`.
+- **Step 3:** Use the variables in the `fmt.Printf` format strings instead of hardcoded ANSI escapes.
+- **Step 4:** Pipe `devtether up` into a file and verify no ANSI escape codes are present in the startup banner.

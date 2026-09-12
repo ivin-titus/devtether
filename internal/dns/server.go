@@ -152,10 +152,16 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 		// Only generate A records for TypeA queries.
 		if q.Qtype == dns.TypeA {
-			rr, err := dns.NewRR(fmt.Sprintf("%s A 127.0.0.1", q.Name))
-			if err == nil {
-				m.Answer = append(m.Answer, rr)
+			rr := &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: net.ParseIP("127.0.0.1"),
 			}
+			m.Answer = append(m.Answer, rr)
 		}
 		// AAAA/HTTPS for valid routes → matched=true, 0 answers → NODATA (RFC 4074).
 	}
