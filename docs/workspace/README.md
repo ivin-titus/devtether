@@ -19,9 +19,9 @@ To maintain a clean and scalable project, we strictly enforce where information 
 
 ## 2. Active Release Pointers
 
-* **Currently Live Release:** `v2.0.0-beta.5` (See [`CHANGELOG.md` at root](../../CHANGELOG.md))
-* **Active Execution Release:** `v2.0.0-beta.6`
-* **Next Major Release:** `v2.0.0-beta.7`
+* **Currently Live Release:** `v2.0.0-beta.6` (See [`CHANGELOG.md` at root](../../CHANGELOG.md))
+* **Active Execution Release:** `v2.0.0-beta.7` (currenly in planning)
+* **Next Major Release:** `v2.0.0-beta.8` (not planned yet)
 
 ---
 
@@ -37,7 +37,7 @@ We welcome contributions generated with the help of AI agents. However, we enfor
 
 ## 4. Workspace Anatomy & Templates
 
-The workspace is organized into release folders (e.g., `v2.0.0-beta.6/`). Each release folder contains a `tracker.md` and an `artifacts/` sandbox for ephemeral planning.
+The workspace is organized into release folders (e.g., `v2.0.0-beta.7/`). Each release folder contains a `tracker.md` and an `artifacts/` sandbox for ephemeral planning.
 
 We enforce exact Markdown templates for these files to maintain absolute consistency across all human and AI contributors.
 

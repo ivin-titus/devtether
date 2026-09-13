@@ -173,9 +173,14 @@ This layer handles all traffic, routing, and local network topologies.
 
 This layer secures cross-network and cross-org collaboration.
 
+### TLD-Based Network Scoping
+To drastically simplify configuration for Engine 3 (Tunneling/LAN Sharing) without verbose `expose_lan: true` flags in YAML, we adopt a strict TLD convention that natively defines network boundaries:
+1. **`*.localhost` (Local-Only):** Strictly bound to the loopback interface (`127.0.0.1`). Never broadcasted over mDNS. Used for private services that should never leave the developer's machine (e.g., local database admin panels).
+2. **`*.internal` (LAN-Shared):** Bound to `0.0.0.0` (all interfaces). Automatically broadcasted to the local network via mDNS. Allows colleagues on the same Wi-Fi to immediately access the service. The domain itself dictates the security posture.
+
 ### LAN Sharing & mDNS
-- Switches proxy bind to `0.0.0.0`.
-- Broadcasts service names via mDNS (`avahi-publish-address` on Linux, `dns-sd` on macOS).
+- Switching to `.internal` automatically expands the proxy bind to `0.0.0.0` for that route.
+- Broadcasts `.internal` service names via mDNS (`avahi-publish-address` on Linux, `dns-sd` on macOS).
 
 ### WAN Tunneling (Self-Hosted Relay)
 - Establishes outbound WebSocket (WSS) connection to a self-hosted `devtether-relay`.
