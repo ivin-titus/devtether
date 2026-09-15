@@ -19,12 +19,20 @@ import (
 // Each top-level key activates an independent engine.
 // Absent keys mean that engine is not loaded.
 type Config struct {
+	Settings    SettingsConfig           `yaml:"settings,omitempty"`
 	Routes      map[string]int           `yaml:"routes,omitempty"`
 	Orchestrate map[string]ServiceConfig `yaml:"orchestrate,omitempty"`
 	Tunnel      *TunnelConfig            `yaml:"tunnel,omitempty"`
 	Access      *AccessConfig            `yaml:"access,omitempty"`
 	Proxy       ProxyConfig              `yaml:"proxy,omitempty"`
 	DNS         DNSConfig                `yaml:"dns,omitempty"`
+}
+
+// SettingsConfig defines engine-level runtime settings.
+type SettingsConfig struct {
+	Daemon  bool   `yaml:"daemon,omitempty"`
+	Verbose bool   `yaml:"verbose,omitempty"`
+	LogPath string `yaml:"log_path,omitempty"`
 }
 
 // ServiceConfig defines an orchestrated service (Engine 2).
@@ -81,12 +89,6 @@ const DefaultProxyPort = 80
 // Loopback-only by default per ADR-003 (secure by default).
 const DefaultDNSBind = "127.0.0.1:53"
 
-// DefaultReadTimeout is the default proxy read timeout.
-const DefaultReadTimeout = 30 * time.Second
-
-// DefaultWriteTimeout is the default proxy write timeout.
-const DefaultWriteTimeout = 60 * time.Second
-
 // DefaultIdleTimeout is the default proxy idle timeout.
 const DefaultIdleTimeout = 120 * time.Second
 
@@ -139,12 +141,6 @@ func detectLegacySchema(data []byte) error {
 func (c *Config) applyDefaults() {
 	if c.Proxy.Port == 0 {
 		c.Proxy.Port = DefaultProxyPort
-	}
-	if c.Proxy.Timeouts.Read == "" {
-		c.Proxy.Timeouts.Read = DefaultReadTimeout.String()
-	}
-	if c.Proxy.Timeouts.Write == "" {
-		c.Proxy.Timeouts.Write = DefaultWriteTimeout.String()
 	}
 	if c.Proxy.Timeouts.Idle == "" {
 		c.Proxy.Timeouts.Idle = DefaultIdleTimeout.String()
@@ -204,14 +200,10 @@ func (c *Config) validateProxy() error {
 	if c.Proxy.Port < 1 || c.Proxy.Port > 65535 {
 		return fmt.Errorf("proxy.port: %d is out of valid range (1-65535)", c.Proxy.Port)
 	}
-	if _, err := time.ParseDuration(c.Proxy.Timeouts.Read); err != nil {
-		return fmt.Errorf("proxy.timeouts.read: invalid duration '%s': %w", c.Proxy.Timeouts.Read, err)
-	}
-	if _, err := time.ParseDuration(c.Proxy.Timeouts.Write); err != nil {
-		return fmt.Errorf("proxy.timeouts.write: invalid duration '%s': %w", c.Proxy.Timeouts.Write, err)
-	}
-	if _, err := time.ParseDuration(c.Proxy.Timeouts.Idle); err != nil {
-		return fmt.Errorf("proxy.timeouts.idle: invalid duration '%s': %w", c.Proxy.Timeouts.Idle, err)
+	if c.Proxy.Timeouts.Idle != "" {
+		if _, err := time.ParseDuration(c.Proxy.Timeouts.Idle); err != nil {
+			return fmt.Errorf("proxy.timeouts.idle: invalid duration '%s': %w", c.Proxy.Timeouts.Idle, err)
+		}
 	}
 	return nil
 }

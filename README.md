@@ -47,7 +47,7 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 ```bash
 # Example for Linux amd64 (replace version with latest)
-tar -xzf devtether_2.0.0-beta.2_linux_amd64.tar.gz
+tar -xzf devtether_<VERSION>_linux_amd64.tar.gz
 chmod +x devtether
 mkdir -p ~/.local/bin
 mv devtether ~/.local/bin/
@@ -134,6 +134,7 @@ See [examples/](examples/) for more configuration patterns, including proxy time
 
 ```bash
 devtether up                        # Start the routing daemon
+devtether up -d                     # Start in the background (logs to .logs/)
 devtether up -c /path/to/config     # Use a specific config file
 devtether routes                    # Show active routes (live from daemon, or from config)
 devtether init                      # Create a starter devtether.yaml

@@ -119,8 +119,8 @@ func TestLoadConfig(t *testing.T) {
 				if len(c.DNS.TLD) != 1 || c.DNS.TLD[0] != "localhost" {
 					return fmt.Errorf("expected default TLD [localhost], got %v", c.DNS.TLD)
 				}
-				if c.Proxy.Timeouts.Read != DefaultReadTimeout.String() {
-					return fmt.Errorf("expected default read timeout, got %s", c.Proxy.Timeouts.Read)
+				if c.Proxy.Timeouts.Idle != DefaultIdleTimeout.String() {
+					return fmt.Errorf("expected default idle timeout, got %s", c.Proxy.Timeouts.Idle)
 				}
 				return nil
 			},
@@ -157,9 +157,41 @@ func TestLoadConfig(t *testing.T) {
 		},
 		{
 			name:    "invalid timeout duration",
-			yaml:    "routes:\n  a.localhost: 3000\nproxy:\n  timeouts:\n    read: not-a-duration",
+			yaml:    "routes:\n  a.localhost: 3000\nproxy:\n  timeouts:\n    idle: not-a-duration",
 			wantErr: true,
 			errMsg:  "invalid duration",
+		},
+		{
+			name: "settings config parsed",
+			yaml: "settings:\n  daemon: true\n  verbose: true\n  log_path: /tmp/test-logs\nroutes:\n  a.localhost: 3000",
+			check: func(c *Config) error {
+				if !c.Settings.Daemon {
+					return fmt.Errorf("expected daemon=true")
+				}
+				if !c.Settings.Verbose {
+					return fmt.Errorf("expected verbose=true")
+				}
+				if c.Settings.LogPath != "/tmp/test-logs" {
+					return fmt.Errorf("expected log_path=/tmp/test-logs, got %s", c.Settings.LogPath)
+				}
+				return nil
+			},
+		},
+		{
+			name: "settings defaults when absent",
+			yaml: "routes:\n  a.localhost: 3000",
+			check: func(c *Config) error {
+				if c.Settings.Daemon {
+					return fmt.Errorf("expected daemon=false by default")
+				}
+				if c.Settings.Verbose {
+					return fmt.Errorf("expected verbose=false by default")
+				}
+				if c.Settings.LogPath != "" {
+					return fmt.Errorf("expected empty log_path by default, got %s", c.Settings.LogPath)
+				}
+				return nil
+			},
 		},
 	}
 

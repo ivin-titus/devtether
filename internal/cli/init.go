@@ -26,6 +26,11 @@ const defaultConfig = `# DevTether Configuration
 routes:
   # myapp.localhost: 3000
   # api.localhost: 8000
+
+# settings:
+#   daemon: false        # Run in background by default (or use: devtether up -d)
+#   verbose: false       # Enable debug-level logging
+#   log_path: "./.logs"  # Log directory when running detached
 `
 
 func runInit(cmd *cobra.Command, args []string) error {

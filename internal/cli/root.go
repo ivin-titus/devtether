@@ -21,6 +21,7 @@ port memorization, reverse proxy configs, and ngrok subscriptions with clean
 named domains — all from a single Go binary.
 
   devtether up        Start the routing daemon
+  devtether up -d     Start in the background (logs to .logs/)
   devtether routes    Show active routes
   devtether init      Create a starter devtether.yaml
   devtether version   Print version information

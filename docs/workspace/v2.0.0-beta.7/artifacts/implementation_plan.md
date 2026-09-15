@@ -15,27 +15,65 @@ This release elevates Engine 1 (Core Networking) from a foreground-only CLI tool
 
 ## Phase 1: Daemon Infrastructure
 
-### Subphase 1.1: `settings:` Configuration Block
+### Subphase 1.1: `settings:` Configuration Block ✅
 The YAML config currently has no namespace for engine-level settings. All daemon, logging, and runtime knobs need a home that won't pollute the `routes:` namespace.
-- **Step 1:** Add a `Settings` struct to `internal/config/config.go` with fields: `Daemon bool`, `Verbose bool`, `LogLevel string`, `LogPath string`.
+- **Step 1:** Add a `Settings` struct to `internal/config/config.go` with fields: `Daemon bool`, `Verbose bool`, `LogPath string`.
 - **Step 2:** Add `Settings SettingsConfig yaml:"settings,omitempty"` to the top-level `Config` struct.
-- **Step 3:** Wire defaults in `applyDefaults()` (e.g., `LogLevel` defaults to `"info"`, `LogPath` defaults to `"./.logs"`).
-- **Step 4:** Add validation in `validate()` (valid log levels, writable log path).
-- **Step 5:** Add test cases to `config_test.go`.
+- **Step 3:** Add test cases to `config_test.go`.
 
-### Subphase 1.2: Detached Daemon Mode (`-d`)
+> **Resolution (09/15/2026):**
+> - Shipped `SettingsConfig` with 3 fields: `daemon`, `verbose`, `log_path`.
+> - `LogLevel` was dropped (YAGNI) — the binary `verbose` toggle already covers the codebase's needs. See discussion_space.md Pre-Mortem Anomaly #1.
+> - `settings.dns.fallback_port` was dropped — the top-level `dns:` key already owns DNS config. See Pre-Mortem Anomaly #2.
+> - No `applyDefaults()` changes needed — Go zero-values are the correct defaults (`daemon=false`, `verbose=false`, `log_path=""`).
+> - No `validate()` changes needed — the fields are validated at use-time (log dir creation, daemon spawn). Ponytail: skip premature validation.
+> - 2 new table-driven test cases added (`settings config parsed`, `settings defaults when absent`).
+> - **Files:** `internal/config/config.go`, `internal/config/config_test.go`.
+
+### Subphase 1.2: Detached Daemon Mode (`-d`) ✅
 `devtether up` currently blocks the terminal. Developers need a way to run it in the background.
 - **Step 1:** Add a `-d` / `--detach` flag to the `up` command in `internal/cli/up.go`.
-- **Step 2:** When `-d` is set (or `settings.daemon: true` in config), use `exec.Command(os.Args[0], "up", "--config", configPath)` with `SysProcAttr{Setsid: true}` to spawn a detached child, then exit the parent.
-- **Step 3:** The child process must detect it is the detached child (e.g., via an internal `--_forked` flag) and proceed with normal `runUp` logic.
-- **Step 4:** Write the child PID to a predictable location for `devtether status` to read.
+- **Step 2:** When `-d` is set (or `settings.daemon: true` in config), use `exec.CommandContext` with `SysProcAttr{Setsid: true}` to spawn a detached child, then exit the parent.
+- **Step 3:** The child process detects it is the forked child via `DEVTETHER_FORKED=1` env var and proceeds with normal `runUp` logic.
 
-### Subphase 1.3: Log Routing & Storage
+> **Resolution (09/15/2026):**
+> - Shipped `-d`/`--detach` flag on the `up` command.
+> - Config-driven via `settings.daemon: true`. Uses `cmd.Flags().Changed("detach")` to avoid overriding explicit CLI flags.
+> - Used `DEVTETHER_FORKED=1` env var instead of a hidden `--_forked` flag — cleaner, no CLI surface pollution.
+> - PID file was dropped (YAGNI) — the IPC socket already serves as the liveness indicator via `daemon.CheckRunning`. PID is printed to stdout on spawn. `devtether status` (Phase 2) will expose PID via `/status` endpoint.
+> - Parent runs `daemon.CheckRunning` pre-flight for immediate user feedback before forking.
+> - `settings.verbose` passthrough: if CLI `--verbose` wasn't explicitly set but config has `verbose: true`, re-initializes the logger in debug mode.
+> - **Files:** `internal/cli/up.go`.
+
+### Subphase 1.3: Log Routing & Storage ✅
 Detached mode is useless without persistent logs.
-- **Step 1:** When running detached, redirect `slog` output to a file inside the configured `settings.log_path` directory (default: `./.logs/devtether.log` relative to the config file's directory).
+- **Step 1:** When running detached, redirect child stdout/stderr to a log file inside the configured `settings.log_path` directory (default: `./.logs/devtether.log` relative to the config file's directory).
 - **Step 2:** Ensure the log directory is created with `0700` permissions.
-- **Step 3:** When running as an OS-native service (future `service install`), detect the init system and route to standard OS paths (`journalctl` / `/var/log/devtether/`).
 
+> **Resolution (09/15/2026):**
+> - Implemented in the `daemonize()` function in `internal/cli/up.go`.
+> - Log dir: `settings.log_path` if set, else `./.logs/` resolved relative to the config file's absolute path.
+> - Log dir created with `0700` (ADR-003). Log file `0644` (readable for debugging).
+> - Child's `os.Stdout` and `os.Stderr` are both redirected to the log file. Since the logger and `fmt.Printf` both write to stdout, all output is captured. The existing `term.IsTerminal` check automatically strips ANSI codes when stdout is a file.
+> - OS-native service log routing (journalctl, `/var/log/devtether/`) is deferred to Subphase 3.2 (service installer) — it cannot be implemented without the init system detection logic.
+> - **Files:** `internal/cli/up.go`.
+
+### Subphase 1.4: Documentation & Cleanup (Tech Debt) ✅
+Phase 1 shipped code but left documentation surfaces stale. These are non-architectural fixes from audit findings 1, 4–7, and 10.
+- **Step 1:** Update root help cheat-sheet in `internal/cli/root.go` — add `devtether up -d` line. *(Audit Finding 4)*
+- **Step 2:** Update `up` command Long description in `internal/cli/up.go` — mention `-d` background mode and log path. *(Audit Finding 5)*
+- **Step 3:** Update `README.md` Commands section — add `devtether up -d` example. *(Audit Finding 6)*
+- **Step 4:** Update `README.md` download example — replace stale `beta.2` with `<VERSION>` placeholder. *(Audit Finding 7)*
+- **Step 5:** Add commented `settings:` block to `init.go`'s default config template so users discover `daemon`, `verbose`, `log_path`. *(Audit Finding 8, partial)*
+- **Step 6:** Delete `internal/cli/root_out.go` if confirmed unused. *(Audit Finding 10)*
+- **Step 7:** Remove stale `DefaultReadTimeout`, `DefaultWriteTimeout` constants, their `applyDefaults()` wiring, and their `validateProxy()` checks from `internal/config/config.go`. Update `config_test.go` accordingly. *(Audit Finding 1)*
+
+> **Resolution (09/15/2026):**
+> - All 7 steps completed. `make test` passes (8/8 checks, 0 lint issues).
+> - **Files modified:** `internal/cli/root.go`, `internal/cli/up.go`, `internal/cli/init.go`, `README.md`, `internal/config/config.go`, `internal/config/config_test.go`.
+> - **Files deleted:** `internal/cli/root_out.go` (dead placeholder, confirmed via `git log` and `grep`).
+> - Finding 8 is partially resolved — `settings:` block added to init template, but help text update deferred to Phase 3.1 wizard.
+> - Finding 9 (unexported godoc) remains open — no action needed per engineering standards.
 ---
 
 ## Phase 2: CLI Observability & Diagnostics

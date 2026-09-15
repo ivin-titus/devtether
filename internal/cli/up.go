@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"syscall"
@@ -25,6 +27,7 @@ import (
 
 func init() {
 	rootCmd.AddCommand(upCmd)
+	upCmd.Flags().BoolP("detach", "d", false, "run the daemon in the background")
 }
 
 var upCmd = &cobra.Command{
@@ -32,7 +35,11 @@ var upCmd = &cobra.Command{
 	Aliases: []string{"start"},
 	Short:   "Start the DevTether routing daemon",
 	Long: `Loads devtether.yaml, registers static routes, and starts the DNS resolver,
-reverse proxy, and IPC daemon. Press Ctrl+C for graceful shutdown.`,
+reverse proxy, and IPC daemon. Press Ctrl+C for graceful shutdown.
+
+Use -d to run in the background. Logs are written to .logs/devtether.log
+(relative to devtether.yaml) or the path set in settings.log_path.
+Background mode can also be enabled via settings.daemon in devtether.yaml.`,
 	RunE: runUp,
 }
 
@@ -48,6 +55,24 @@ func runUp(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("%s not found. Create one with:\n\n  devtether init", configPath)
 		}
 		return fmt.Errorf("config error: %w", err)
+	}
+
+	// 1.5. Apply config-driven verbose if CLI flag wasn't explicitly set.
+	if !cmd.Flags().Changed("verbose") && cfg.Settings.Verbose {
+		verbose = true
+		logger.Setup(true)
+	}
+
+	// 1.6. Daemonize if requested via -d flag or settings.daemon config.
+	detach, _ := cmd.Flags().GetBool("detach")
+	if !cmd.Flags().Changed("detach") && cfg.Settings.Daemon {
+		detach = true
+	}
+	if detach && os.Getenv("DEVTETHER_FORKED") == "" {
+		if checkErr := daemon.CheckRunning(context.Background()); checkErr != nil {
+			return checkErr
+		}
+		return daemonize(cfg)
 	}
 
 	// 2. Initialize the routing engine.
@@ -291,4 +316,51 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 			}
 		}
 	}()
+}
+
+// daemonize spawns a detached child process of DevTether and exits the parent.
+// The child's stdout/stderr are redirected to a log file.
+func daemonize(cfg *config.Config) error {
+	// Resolve log directory.
+	logDir := cfg.Settings.LogPath
+	if logDir == "" {
+		absConfig, err := filepath.Abs(configPath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve config path: %w", err)
+		}
+		logDir = filepath.Join(filepath.Dir(absConfig), ".logs")
+	}
+
+	//nolint:gosec // Log directory uses 0700 per ADR-003 security model
+	if err := os.MkdirAll(logDir, 0700); err != nil {
+		return fmt.Errorf("failed to create log directory %s: %w", logDir, err)
+	}
+
+	logFile := filepath.Join(logDir, "devtether.log")
+	//nolint:gosec // Log files use 0644 — readable by owner and group for debugging
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file %s: %w", logFile, err)
+	}
+
+	args := []string{"up", "--config", configPath}
+	if verbose {
+		args = append(args, "--verbose")
+	}
+
+	//nolint:gosec // G204: os.Args[0] is a safe self-reference for daemon re-exec
+	child := exec.CommandContext(context.Background(), os.Args[0], args...)
+	child.Stdout = f
+	child.Stderr = f
+	child.Env = append(os.Environ(), "DEVTETHER_FORKED=1")
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := child.Start(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	fmt.Printf("DevTether daemon started (PID %d)\n", child.Process.Pid)
+	fmt.Printf("Logs: %s\n", logFile)
+	return nil
 }

@@ -1,24 +1,29 @@
 # Release v2.0.0-beta.7
-**Status:** Planned
+**Status:** In Progress
 **Target:** TBD
 
 ## Active Tasks
 <!-- Valid Categories: [Bug Fix], [Feature], [Chore], [Security], [Docs] -->
 
-- [ ] **[Feature] `settings:` Configuration Block**
-  *Assignee:* `@ivin-titus (via AntiGravity)`
+- [x] **[Feature] `settings:` Configuration Block**
+  *Assignee:* `@ivin-titus (via AntiGravity: Claude Opus 4.6)`
   *Priority:* Critical
-  *Description:* Add a `settings:` top-level key to `devtether.yaml` and `internal/config` for daemon mode, verbose, log level, and log path. This is the foundation all other beta.7 features depend on.
+  *Description:* Add a `settings:` top-level key to `devtether.yaml` and `internal/config` for daemon mode, verbose, and log path.
 
-- [ ] **[Feature] Detached Daemon Mode (`devtether up -d`)**
-  *Assignee:* `@ivin-titus (via AntiGravity)`
+- [x] **[Feature] Detached Daemon Mode (`devtether up -d`)**
+  *Assignee:* `@ivin-titus (via AntiGravity: Claude Opus 4.6)`
   *Priority:* Critical
-  *Description:* Add `-d`/`--detach` flag. Spawn a child process via `exec.Command` with `SysProcAttr{Setsid: true}`. Also support `settings.daemon: true` for config-driven backgrounding.
+  *Description:* Add `-d`/`--detach` flag. Spawn a child process via `exec.CommandContext` with `SysProcAttr{Setsid: true}`. Also support `settings.daemon: true` for config-driven backgrounding.
 
-- [ ] **[Feature] Log Routing for Daemon Mode**
-  *Assignee:* `@ivin-titus (via AntiGravity)`
+- [x] **[Feature] Log Routing for Daemon Mode**
+  *Assignee:* `@ivin-titus (via AntiGravity: Claude Opus 4.6)`
   *Priority:* High
-  *Description:* When running detached, route `slog` output to `.logs/devtether.log` (relative to config dir). Create log directory with `0700`. Configurable via `settings.log_path`.
+  *Description:* When running detached, route output to `.logs/devtether.log` (relative to config dir). Create log directory with `0700`. Configurable via `settings.log_path`.
+
+- [x] **[Docs] Phase 1 Documentation & Cleanup (Subphase 1.4)**
+  *Assignee:* `@ivin-titus (via AntiGravity: Claude Opus 4.6)`
+  *Priority:* High
+  *Description:* Fix documentation debt from Phase 1: update root/up help text, README commands, init template, remove stale config fields, delete dead `root_out.go`. See audit findings 1, 4–10.
 
 - [ ] **[Feature] `devtether status` Command**
   *Assignee:* `@ivin-titus (via AntiGravity)`

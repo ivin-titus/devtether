@@ -109,3 +109,50 @@ All items in sections 1–4 are scoped into beta.7 (see `implementation_plan.md`
 
 ### Resolution
 These principles are standing directives. They apply to all current and future sprints. No further action required — they are enforced via `docs/engineering-standards.md` and the ponytail skill.
+
+---
+
+## Discussion: Phase 1 Pre-Mortem Anomalies
+
+### 1. `settings.verbose` vs `settings.log_level` Overlap
+The example schema in the discussion shows both `verbose: true` and `log_level: "info"`. These are contradictory — if verbose is true, the effective level is debug, not info. Having both fields creates ambiguity about which takes precedence.
+
+**Resolution:** Ship only `daemon`, `verbose`, and `log_path` for now. `log_level` is YAGNI — the binary verbose/non-verbose toggle already serves the codebase. Add fine-grained levels later if a real use case demands it.
+
+### 2. `settings.dns.fallback_port` Duplicates Top-Level `dns:` Key
+The discussion's example schema nests `dns.fallback_port` under `settings:`. The top-level `dns:` key already owns DNS configuration (`tld`, `bind`). Duplicating DNS config under `settings:` is a DRY violation (`docs/engineering-standards.md`).
+
+**Resolution:** Do not add DNS config under `settings:`. The existing top-level `dns:` key is the single owner of DNS configuration.
+
+### 3. Logger Writes to `os.Stdout` (Not `os.Stderr`)
+Both `outLog` and the `slog.TextHandler` in `internal/logger/logger.go` write to `os.Stdout`. Most daemon loggers use `os.Stderr` so stdout can carry structured output. When the daemon is forked and stdout is redirected to a log file, this works fine — but it means `fmt.Printf` startup UI output also goes to the log file.
+
+**Resolution:** Acceptable for now. The existing `term.IsTerminal` check already strips ANSI codes when stdout is a file. A future refactor could split structured output (stdout) from log output (stderr), but that's not needed for beta.7.
+
+---
+
+## Discussion: Documentation Debt from Phase 1 (Daemon Mode)
+
+Phase 1 shipped code for `-d` mode, `settings:` config, and log routing. But the user-facing documentation surface was not updated alongside the code. This creates a discoverability gap — the feature exists but users can't find it.
+
+### 1. Affected Surfaces
+- **Root help text** (`devtether --help`): Hardcoded cheat-sheet doesn't mention `up -d`.
+- **`up` command Long description**: Says "Press Ctrl+C for graceful shutdown" but doesn't mention `-d` backgrounding or where logs go.
+- **README.md Commands section**: Missing `devtether up -d`.
+- **README.md download example**: Still says `beta.2` tarball.
+- **`init` default template**: Generates a `devtether.yaml` with only `routes:` — doesn't show `settings:` as a configurable block. Users won't know `daemon`, `verbose`, or `log_path` exist.
+- **`root_out.go`**: Empty placeholder file (2 lines, `package cli` only). Dead code.
+
+### 2. Principle
+Per `docs/engineering-standards.md`: "Documentation updated if CLI flags or behavior changed." We added a `-d` flag and changed behavior (daemon mode, log routing). Documentation must catch up.
+
+### 3. Proposed Batch Fix
+All of these can be fixed in a single focused commit — no architectural decisions needed:
+1. Update `root.go` Long text to add `devtether up -d`.
+2. Update `up.go` Long text to mention `-d` and log path.
+3. Update `README.md` Commands section and download example.
+4. Add `settings:` block (commented) to `init.go`'s default template.
+5. Delete `root_out.go` if confirmed unused.
+
+### Resolution
+Findings logged as audit items 4–10 in `audit_report.md`. Fix deferred to a single documentation commit before beta.7 release. No code logic changes needed.
