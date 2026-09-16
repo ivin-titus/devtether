@@ -3,7 +3,6 @@ package dns
 import (
 	"context"
 	"fmt"
-	"net"
 	"testing"
 	"time"
 
@@ -133,7 +132,7 @@ func TestConcurrentStartShutdown(t *testing.T) {
 
 	cfg := config.DNSConfig{
 		TLD:  []string{"localhost"},
-		Bind: ephemeralAddr(t),
+		Bind: "127.0.0.1:0", // Let OS pick port
 	}
 	srv := NewServer(cfg, engine)
 
@@ -163,28 +162,29 @@ func TestConcurrentStartShutdown(t *testing.T) {
 	}
 }
 
-// startTestServer creates and starts a DNS server on an ephemeral port.
+// startTestServer creates and starts a DNS server on a random port.
 // The server is automatically shut down when the test finishes.
 func startTestServer(t *testing.T, engine *router.Engine, tlds []string) (*Server, string) {
 	t.Helper()
 
-	addr := ephemeralAddr(t)
 	cfg := config.DNSConfig{
 		TLD:  tlds,
-		Bind: addr,
+		Bind: "127.0.0.1:0", // Let OS pick port
 	}
 	srv := NewServer(cfg, engine)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	pc, err := srv.Listen(ctx)
+	if err != nil {
+		t.Fatalf("failed to listen on test server: %v", err)
+	}
+
+	addr := pc.LocalAddr().String()
+
 	errCh := make(chan error, 1)
 	go func() {
-		pc, err := srv.Listen(ctx)
-		if err != nil {
-			errCh <- err
-			return
-		}
 		errCh <- srv.Serve(ctx, pc)
 	}()
 
@@ -210,20 +210,6 @@ func startTestServer(t *testing.T, engine *router.Engine, tlds []string) (*Serve
 
 	t.Fatal("server did not become ready within 2 seconds")
 	return nil, ""
-}
-
-// ephemeralAddr returns a "127.0.0.1:<port>" address using a kernel-assigned
-// ephemeral port. The port is freed before returning so the DNS server can bind it.
-func ephemeralAddr(t *testing.T) string {
-	t.Helper()
-	//nolint:noctx // Test listener does not require context cancellation
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to get ephemeral port: %v", err)
-	}
-	addr := conn.LocalAddr().String()
-	_ = conn.Close()
-	return addr
 }
 
 // TestMatchesTLD validates the TLD matching logic.

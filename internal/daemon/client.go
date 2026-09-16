@@ -52,3 +52,83 @@ func (c *Client) ListRoutes() ([]RouteResponse, error) {
 
 	return routes, nil
 }
+
+// Status fetches daemon status from the running daemon.
+func (c *Client) Status() (*StatusResponse, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://unix/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to contact devtether daemon (is it running?): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+
+	var status StatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, fmt.Errorf("failed to decode daemon response: %w", err)
+	}
+
+	return &status, nil
+}
+
+// Shutdown requests the daemon to shut down gracefully.
+func (c *Client) Shutdown() error {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://unix/shutdown", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to contact devtether daemon (is it running?): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// ShutdownAndWait sends a shutdown request and returns the response for the
+// caller to drain. The server's /shutdown handler keeps the HTTP connection
+// open during the entire graceful shutdown (including proxy drain). The caller
+// should drain the response body with io.Copy(io.Discard, resp.Body) — when
+// the read returns (EOF), the daemon has fully stopped.
+//
+// The caller is responsible for closing resp.Body.
+func (c *Client) ShutdownAndWait() (*http.Response, error) {
+	// Use a separate client with a longer timeout to accommodate the full
+	// shutdown sequence: IPC shutdown (10s) + proxy drain (5s) + buffer.
+	longClient := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", SocketPath())
+			},
+		},
+		Timeout: 20 * time.Second,
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://unix/shutdown", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := longClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+
+	return resp, nil
+}

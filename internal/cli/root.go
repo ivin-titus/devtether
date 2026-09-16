@@ -22,7 +22,12 @@ named domains — all from a single Go binary.
 
   devtether up        Start the routing daemon
   devtether up -d     Start in the background (logs to .logs/)
+  devtether up -c     Use a specific config file
+  devtether down      Stop the background daemon gracefully
+  devtether status    Show daemon status, uptime, and routes
   devtether routes    Show active routes
+  devtether logs      Show or tail daemon logs
+  devtether doctor    Check system environment for common issues
   devtether init      Create a starter devtether.yaml
   devtether version   Print version information
 

@@ -113,16 +113,26 @@ type Target struct {
 
 Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication.
 
-**Socket location:** `$XDG_RUNTIME_DIR/devtether/devtether.sock` (fallback: `/tmp/devtether.sock`)
-**Permissions:** `0600` (owner-only read/write)
+**Instance Ownership (ADR-003):**
+- Primary authority: `flock(LOCK_EX)` on `devtether.lock` ensures exact instance ownership without race conditions. Kernel releases the lock on exit.
+- Secondary authority: `devtether.pid` for diagnostics.
+- Liveness check: Background goroutines block on `flock(LOCK_EX)` against the lock file for instant notification of daemon death (zero polling).
+
+**Socket location & Security:**
+- Default: `$XDG_RUNTIME_DIR/devtether/devtether.sock`
+- Secure fallback: `os.TempDir()/devtether-<uid>/devtether.sock` (prevents cross-user conflicts and hijacking).
+- Symlink protection: Validates directory ownership via `Lstat` and UID matching before placing state files.
+- Permissions: Socket uses `0600` (owner-only), socket directory uses `0700`.
+- Root Isolation (macOS/sudo): When run with `sudo` (UID 0), the daemon is securely isolated to root's runtime directory, allowing safe mixed-privilege operations.
 
 **Endpoints:**
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/routes` | List all active routes |
+| `GET` | `/status` | Get daemon uptime, PID, route count, and heap allocation |
+| `POST` | `/shutdown` | Trigger a graceful shutdown (connection remains held open until complete) |
 | `POST` | `/services` | **[Planned]** Add a route or orchestrated service |
 | `DELETE` | `/services?domain=X` | **[Planned]** Remove a route or stop a service |
-| `GET` | `/status` | **[Planned]** Health check + engine status |
 
 ---
 

@@ -76,7 +76,8 @@ The implementer must:
 * add tests for new behavior/modules (do not skip mandated tests);
 * update tests affected by changed behavior;
 * avoid unrelated refactors and speculative abstractions (No AI Slop);
-* never leak ephemeral release terminology (e.g., "Phase 1") into source code, comments, or permanent documentation.
+* never leak ephemeral release terminology (e.g., "Phase 1") into source code, comments, or permanent documentation;
+* avoid terminology implying the software is "production-ready" (DevTether is in beta).
 
 Record AI identity according to the workspace convention.
 

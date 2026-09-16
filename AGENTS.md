@@ -47,6 +47,7 @@ When operating in this repository, agents must adhere to strict execution discip
 - **Minimal Step Size:** Do not rush. Make minimal lines of code changes, one logical thing at a time. If a task requires touching multiple files, break it down and verify incrementally.
 - **No Overengineering (AI Slop):** Do not generate bloated interfaces, premature abstractions, or massive inline string literals. If you are generating a massive block of boilerplate, you are doing it wrong. Find the native, idiomatic Go approach. (See [docs/engineering-standards.md](docs/engineering-standards.md))
 - **Anti-Guessing Rule:** If you are stuck, lack context, or the requirements are ambiguous, **STOP and ask necessary questions**. Do not implement something randomly or blindly guess.
+- **Beta Transparency (No Production Claims):** DevTether is currently in beta. Never use terminology in commits, documentation, changelogs, PRs, or code comments that directly or indirectly implies the software is "production-ready" or stable for production use. Use accurate, tempered language that reflects its ongoing development state to avoid confusing users.
 
 ## Standard workflows
 

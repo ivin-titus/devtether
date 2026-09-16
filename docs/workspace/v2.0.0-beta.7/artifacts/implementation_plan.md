@@ -78,11 +78,14 @@ Phase 1 shipped code but left documentation surfaces stale. These are non-archit
 
 ## Phase 2: CLI Observability & Diagnostics
 
-### Subphase 2.1: `devtether status` (Passive Reporting)
-The CLI needs a way to query the running daemon's state without modifying anything.
+### Subphase 2.1: `devtether status` & `devtether down` (IPC Client Commands)
+The CLI needs a way to query and control the running daemon via the Unix socket.
 - **Step 1:** Add a `GET /status` handler to the IPC daemon (`internal/daemon/daemon.go`). Return JSON: uptime, PID, active route count, `runtime.MemStats.Alloc`.
 - **Step 2:** Create `internal/cli/status.go`. Dial the Unix socket, fetch `/status`, render a `text/tabwriter` table.
 - **Step 3:** If the daemon is not running, print a clear message and exit 1.
+- **Step 4:** Add a `POST /shutdown` handler to the IPC daemon. Trigger the root context's `cancel()` to initiate the existing graceful shutdown path.
+- **Step 5:** Create `internal/cli/down.go`. Dial the Unix socket, send the shutdown request, print confirmation.
+- **Step 6:** If the daemon is not running, print a clear message and exit 0 (idempotent — `down` on a stopped daemon is a no-op, not an error).
 
 ### Subphase 2.2: `devtether doctor` (Active Diagnostics)
 A proactive environment scanner that does NOT require a running daemon.
@@ -99,6 +102,99 @@ A proactive environment scanner that does NOT require a running daemon.
 - **Step 1:** Create `internal/cli/logs.go`. Read the log path from the config (or default).
 - **Step 2:** Implement a `tail -f` style follower using `os.Open` + periodic `Read` (no external dependencies).
 - **Step 3:** Support `--lines N` flag for initial backlog.
+
+### Subphase 2.4: Phase 2 Remediation (Audit Findings)
+Based on the Phase 2 audit, several fixes are required before closing the implementation phase.
+- **Step 1:** Fix Finding 11: In `internal/cli/up.go`, add a check inside the `daemonize()` guard to reject daemonization if `os.Getuid() == 0`, logging a clear error that `sudo -d` is not supported.
+- **Step 2:** Fix Finding 12: In `internal/cli/status.go`, change the tabwriter label from "Memory" to "Heap" to clarify that the metric is `MemStats.Alloc`.
+- **Step 3:** Fix Finding 13: In `internal/cli/doctor.go`, introduce a `printWarn` helper and a `warnings` counter. Change the stale socket check and the port 80 check to use `printWarn` instead of `printCheck(false, ...)`.
+- **Step 4:** Fix Finding 16: In `internal/cli/doctor.go`, guard the `checkSetcap` call with `if runtime.GOOS == "linux" { checkSetcap(...) }` and add a macOS fallback. Also update the messaging to not recommend `sudo`.
+- **Step 5:** Fix Finding 14 & 15: In `internal/cli/logs.go`, add a `-f`/`--follow` boolean flag. If `-f` is true, enter follow mode directly. Update the `Long` description to clarify "last N lines" and document `-f`.
+- **Step 6:** Run `make test` and verify CLI UX.
+
+### Subphase 2.5: Documentation Updates (Phase 2)
+All four new commands and two new IPC endpoints require corresponding documentation updates across every surface. Fix in a single focused commit after all Phase 2 code is verified.
+
+**`internal/cli/root.go` — Root help cheat-sheet:**
+- **Step 1:** Add `devtether status`, `devtether down`, `devtether doctor`, `devtether logs` to the `Long` description cheat-sheet. *(Same pattern as Subphase 1.4 Step 1.)*
+
+**`README.md` — Commands section:**
+- **Step 2:** Add all four new commands to the Commands section with one-line descriptions.
+
+**Cobra `Long` descriptions — each new command file:**
+- **Step 3:** `internal/cli/status.go` Long: describe output columns (uptime, PID, routes, Heap), and note exit 1 if daemon not running.
+- **Step 4:** `internal/cli/down.go` Long: describe graceful shutdown behaviour and idempotent exit 0.
+- **Step 5:** `internal/cli/doctor.go` Long: list the checks performed and describe ✓/⚠/✗ output format, mentioning that ⚠ is for expected system conditions (like port 80 restrictions without setcap).
+- **Step 6:** `internal/cli/logs.go` Long: describe tail behaviour, `-f`/`--follow` flag, `--lines N` (explicitly stating "last N lines"), and the foreground logging limitation.
+- **Step 6b:** `internal/cli/up.go` Long: Add a note explaining that daemon mode (`-d`) is not supported when running as root/sudo.
+
+**`internal/daemon/daemon.go` — IPC handler godoc:**
+- **Step 7:** Add godoc comment to `handleStatus` explaining the JSON response shape (`uptime`, `pid`, `routes`, `mem_alloc`).
+- **Step 8:** Add godoc comment to `handleShutdown` explaining that it triggers graceful context cancellation.
+
+**`docs/architecture.md` — IPC API surface:**
+- **Step 9:** Update the IPC API section to list all registered endpoints: `GET /routes`, `GET /status`, `POST /shutdown`. *(Keeps the architecture doc as the single source of truth for the IPC contract.)*
+
+### Subphase 2.6: Daemon Lifecycle Remediation (UX Bugs)
+Based on post-Phase 2 verification, several critical daemon lifecycle bugs must be fixed before Phase 3. **All fixes use event-driven kernel primitives — no polling.** See `premortem_2.6_2.7.md` for the full design rationale.
+
+> [!IMPORTANT]
+> Subphase 2.6 is **blocked by Subphase 2.7** — the `logs -f` fix depends on flock, and the shutdown fix depends on IPC server hardening (WriteTimeout).
+
+**Issue 1: The `logs -f` Zombie Trap (F18)**
+- **Step 1:** In `internal/daemon/`, add a `WaitForExit(ctx context.Context) error` helper that opens the lock file read-only and calls `syscall.Flock(fd, LOCK_EX)` (blocking). This blocks in the kernel until the daemon releases the lock (any exit, including SIGKILL). Returns `nil` when the daemon exits, or `ctx.Err()` if the context is cancelled.
+- **Step 2:** In `internal/cli/logs.go`, modify `tailFollow` to accept a `context.Context`. Launch `daemon.WaitForExit(ctx)` in a background goroutine. When it returns, cancel the tail context and print `DevTether daemon shut down.`
+
+**Issue 2 & 3: The Shutdown Race & Ghost TCP Bind (F19, F20)**
+- **Step 3:** In `internal/daemon/daemon.go`, rewrite `handleShutdown`:
+  1. Encode and flush the JSON response using `http.Flusher.Flush()`.
+  2. Call `s.cancelFunc()` immediately (remove the `time.Sleep(100ms)`).
+  3. Block on `<-r.Context().Done()` to keep the HTTP connection alive during the entire graceful shutdown (including proxy's 5s drain).
+  The handler only returns after the server's shutdown sequence fires `r.Context()`, which means the entire daemon (IPC, proxy, DNS) has finished draining.
+- **Step 4:** In `internal/daemon/client.go`, add a `ShutdownAndWait() (*http.Response, error)` method that sends the `POST /shutdown` but uses a longer client timeout (15s) to accommodate the full drain window.
+- **Step 5:** In `internal/cli/down.go`, modify `runDown` to call `client.ShutdownAndWait()`, then drain the response body with `io.Copy(io.Discard, resp.Body)`. When `io.Copy` returns (EOF from server closing the connection), the daemon has fully stopped. Print `DevTether daemon stopped.`
+
+**Issue 4: Silent Port Fallback in Daemon Mode (F21)**
+- **Step 6:** In `internal/cli/up.go`, modify `daemonize()` to create an `os.Pipe()` and pass the write-end to the child via `cmd.ExtraFiles` (maps to fd 3 in the child).
+- **Step 7:** In `runUp()`, after all servers are successfully bound (DNS, proxy, IPC), detect fd 3 via `os.NewFile(3, "readiness-pipe")` and write a JSON payload containing the bound port, then close the pipe.
+- **Step 8:** In `daemonize()`, the parent blocks on `readEnd.Read()` with a `SetReadDeadline` of 5 seconds. On success, decode the JSON payload and print `DevTether daemon started (PID X, port Y)`. On EOF (child crashed), print the error and exit non-zero. On timeout, kill the child and report failure.
+
+### Subphase 2.7: Daemon Lifecycle Hardening (Architectural)
+Based on the adversarial security audit (Findings A1–A7), the daemon's instance management and IPC layer require fundamental architectural hardening to meet ADR-003 requirements. This must be implemented before Phase 3.
+
+- **Step 1:** Implement `flock(LOCK_EX|LOCK_NB)` on a dedicated lock file (`$XDG_RUNTIME_DIR/devtether/devtether.lock` or `/tmp/devtether-<uid>/devtether.lock`). This must be acquired *before* any socket operations to serve as the primary instance ownership mechanism.
+- **Step 2:** Write an atomic PID file (temp file → fsync → rename) alongside the lock file. Used for diagnostics and as a fallback for `SIGTERM`.
+- **Step 3:** Secure the fallback socket path. Change `/tmp/devtether.sock` to `/tmp/devtether-<uid>/devtether.sock`. Ensure the directory is created with `0700` permissions.
+- **Step 4:** Implement symlink protection. After creating the socket directory, use `os.Lstat` to verify it is a real directory (not a symlink) and owned by the current UID (`stat.Sys().(*syscall.Stat_t).Uid == os.Getuid()`). Fail closed on mismatch.
+- **Step 5:** Implement daemonize readiness verification. **Use the anonymous pipe pattern from Subphase 2.6 Step 6–8.** The readiness pipe is sent after flock + socket bind + server bind are all complete. This replaces any socket-polling alternative.
+- **Step 6:** Harden the IPC HTTP server. Set `MaxHeaderBytes: 1<<16`, `ReadTimeout: 10s`, `WriteTimeout: 15s`. The `WriteTimeout` is 15s (not 10s) to accommodate the shutdown connection-hold pattern from Subphase 2.6 Step 3. Use `http.MaxBytesReader` for any endpoints that read a body.
+- **Step 7:** Document the `syscall.Umask(0177)` constraint in `daemon.go` to prevent future goroutine race conditions on file creation.
+
+### Subphase 2.8: Phase 2 Final Post-Mortem & UX Cleanups
+- **Step 1:** Perform a final post-implementation audit of all Phase 2 changes against standard (`devtether-audit`).
+- **Step 2:** Close the minor FD leak in `up.go` (closing the logger FD after successful fork).
+- **Step 3:** Enhance the UI silent fallback mechanism from Subphase 2.6/2.7 by parsing the JSON payload returned over the readiness pipe and presenting an OS-aware warning on the CLI if a port fallback occurred.
+- **Step 4:** Update `setcap` references universally to use `runtime.GOOS == "linux"` gating, preventing macOS/Windows confusion.
+
+### Subphase 2.9: MacOS & Root Lifecycle Support (Unblocking `sudo -d`)
+
+#### Goal Description
+In early Phase 2, `sudo devtether up -d` was blocked because it created a root-owned Unix socket in a world-writable `/tmp` folder, locking the user out of `devtether down`. However, with the new Subphase 2.7 secure runtime directory model (`/tmp/devtether-0` with `0700` permissions), running as a root daemon is now completely safe and isolated.
+Removing this restriction is essential for macOS users, who do not have `setcap` and *must* use `sudo` to bind to port 80.
+
+#### Proposed Changes
+- **`internal/cli/up.go`**:
+  - [MODIFY] Remove the `if os.Getuid() == 0 && detach` hard block.
+  - [MODIFY] Update the `upCmd.Long` help text to remove the "strictly blocked" warning. Instead, clearly document the OS-specific path to port 80:
+    - *Linux:* Recommend `sudo setcap cap_net_bind_service=+ep` so users don't have to run as root.
+    - *macOS:* Recommend running `sudo devtether up -d` to bind port 80.
+
+#### Verification Plan
+- **Automated Tests**: Standard `make test`.
+- **Manual Verification**: Run `sudo ./devtether up -d` (should succeed). Run `./devtether status` (should say not running, because it looks at UID 1000). Run `sudo ./devtether status` (should connect to UID 0 socket). Run `sudo ./devtether down`.
+
+> [!IMPORTANT]
+> **User Review Required**: Does this unblocking strategy align with your expectations for macOS users? Once you approve this plan, I will execute the change and update the artifacts and tracker.
 
 ---
 

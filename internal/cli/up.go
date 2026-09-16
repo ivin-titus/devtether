@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +31,12 @@ import (
 func init() {
 	rootCmd.AddCommand(upCmd)
 	upCmd.Flags().BoolP("detach", "d", false, "run the daemon in the background")
+
+	if runtime.GOOS == "linux" {
+		upCmd.Long += "\n\nNote: Binding to port 80 requires root privileges. It is highly recommended to\nuse 'sudo setcap cap_net_bind_service=+ep devtether' instead of running as root."
+	} else {
+		upCmd.Long += "\n\nNote: Binding to port 80 requires root privileges. Run 'sudo devtether up -d' to bind."
+	}
 }
 
 var upCmd = &cobra.Command{
@@ -91,19 +100,19 @@ func runUp(cmd *cobra.Command, args []string) error {
 		log.Debug("no routes defined in devtether.yaml")
 	}
 
-	// 4. Create servers.
-	dnsServer := dns.NewServer(cfg.DNS, engine)
-	proxyServer := proxy.NewServer(cfg.Proxy, engine)
-	ipcDaemon := daemon.NewServer(engine)
-
-	// 5. Set up context with signal cancellation.
+	// 4. Set up context with signal cancellation.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 5.5. Pre-flight check: ensure another daemon instance is not already running.
+	// 4.5. Pre-flight check: ensure another daemon instance is not already running.
 	if checkErr := daemon.CheckRunning(ctx); checkErr != nil {
 		return checkErr
 	}
+
+	// 5. Create servers.
+	dnsServer := dns.NewServer(cfg.DNS, engine)
+	proxyServer := proxy.NewServer(cfg.Proxy, engine)
+	ipcDaemon := daemon.NewServer(engine, cancel)
 
 	// --- DYNAMIC UI: STARTING ---
 	dim, reset := "\033[90m", "\033[0m"
@@ -175,6 +184,22 @@ func runUp(cmd *cobra.Command, args []string) error {
 	})
 
 	printStartupSummary(gCtx, cfg, proxyAddr)
+
+	// 6.5. Readiness Notification.
+	// If we were spawned by daemonize(), signal readiness to the parent via FD 3.
+	// We do this here because DNS and Proxy have successfully bound their ports,
+	// and all goroutines are active.
+	if os.Getenv("DEVTETHER_FORKED") == "1" {
+		pipe := os.NewFile(3, "pipe")
+		if pipe != nil {
+			// Write the dynamic proxy port back to the parent as JSON.
+			_ = json.NewEncoder(pipe).Encode(map[string]interface{}{
+				"port": proxyAddr,
+				"pid":  os.Getpid(),
+			})
+			_ = pipe.Close()
+		}
+	}
 
 	// 7. Block until all goroutines finish.
 	if err := g.Wait(); err != nil {
@@ -320,6 +345,7 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 
 // daemonize spawns a detached child process of DevTether and exits the parent.
 // The child's stdout/stderr are redirected to a log file.
+// Readiness is synchronized via an anonymous pipe (FD 3) — no polling.
 func daemonize(cfg *config.Config) error {
 	// Resolve log directory.
 	logDir := cfg.Settings.LogPath
@@ -343,6 +369,13 @@ func daemonize(cfg *config.Config) error {
 		return fmt.Errorf("failed to open log file %s: %w", logFile, err)
 	}
 
+	// Create anonymous pipe for readiness signaling.
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to create readiness pipe: %w", err)
+	}
+
 	args := []string{"up", "--config", configPath}
 	if verbose {
 		args = append(args, "--verbose")
@@ -352,12 +385,48 @@ func daemonize(cfg *config.Config) error {
 	child := exec.CommandContext(context.Background(), os.Args[0], args...)
 	child.Stdout = f
 	child.Stderr = f
+	child.ExtraFiles = []*os.File{writeEnd} // Maps to FD 3 in the child
 	child.Env = append(os.Environ(), "DEVTETHER_FORKED=1")
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := child.Start(); err != nil {
 		_ = f.Close()
+		_ = readEnd.Close()
+		_ = writeEnd.Close()
 		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	// Parent closes its copy of the write end and the log file.
+	_ = writeEnd.Close()
+	_ = f.Close()
+
+	// Block until the child writes to the pipe or exits.
+	// If the child crashes before binding, Read() returns EOF instantly.
+	buf := make([]byte, 512)
+	n, readErr := readEnd.Read(buf)
+	_ = readEnd.Close()
+
+	if readErr != nil {
+		if errors.Is(readErr, io.EOF) {
+			return fmt.Errorf("daemon crashed during startup — check logs at %s", logFile)
+		}
+		return fmt.Errorf("readiness check failed: %w", readErr)
+	}
+
+	var payload struct {
+		Port string `json:"port"`
+		Pid  int    `json:"pid"`
+	}
+	if err := json.Unmarshal(buf[:n], &payload); err == nil {
+		if !strings.HasSuffix(payload.Port, ":80") {
+			parts := strings.Split(payload.Port, ":")
+			port := parts[len(parts)-1]
+			if runtime.GOOS == "linux" {
+				fmt.Printf("⚠ DevTether fell back to port %s (missing sudo or setcap)\n", port)
+			} else {
+				fmt.Printf("⚠ DevTether fell back to port %s (missing administrative privileges)\n", port)
+			}
+		}
 	}
 
 	fmt.Printf("DevTether daemon started (PID %d)\n", child.Process.Pid)

@@ -60,6 +60,7 @@ Look specifically for:
 * new technical debt (anything against engineering standards/ADRs, AI slop, overengineering, bloated boilerplate);
 * stale documentation;
 * leaked ephemeral terminology (e.g., "Phase 1") in source code or permanent documentation;
+* claims of "production-readiness" (DevTether is in beta);
 * incomplete tests (or tests explicitly mandated by ADRs that were lazily skipped);
 * misleading task status.
 

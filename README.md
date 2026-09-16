@@ -136,7 +136,11 @@ See [examples/](examples/) for more configuration patterns, including proxy time
 devtether up                        # Start the routing daemon
 devtether up -d                     # Start in the background (logs to .logs/)
 devtether up -c /path/to/config     # Use a specific config file
+devtether down                      # Stop the background daemon gracefully
+devtether status                    # Show daemon status, uptime, and routes
 devtether routes                    # Show active routes (live from daemon, or from config)
+devtether logs                      # Show or tail daemon logs
+devtether doctor                    # Check system environment for common issues
 devtether init                      # Create a starter devtether.yaml
 devtether version                   # Print version, commit, and build date
 ```

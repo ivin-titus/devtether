@@ -62,8 +62,13 @@ func (s *Server) Listen(ctx context.Context) (net.PacketConn, error) {
 	log := logger.New("dns")
 	log.Debug(fmt.Sprintf("%s unavailable — falling back to 127.0.0.1:5353", s.bind))
 	if netutil.IsPermissionError(err) {
-		if runtime.GOOS == "linux" {
-			log.Debug("to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
+		_, port, _ := net.SplitHostPort(s.bind)
+		if port == "53" {
+			if runtime.GOOS == "linux" {
+				log.Debug("to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
+			} else {
+				log.Debug("to use port 53, run with sudo")
+			}
 		} else {
 			log.Debug("to use port 53, run devtether with administrator privileges")
 		}
