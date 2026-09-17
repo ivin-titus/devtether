@@ -34,7 +34,7 @@ func (h *devHandler) Handle(ctx context.Context, r slog.Record) error {
 		})
 
 		if len(attrs) > 0 {
-			isTerm := term.IsTerminal(int(os.Stdout.Fd()))
+			isTerm := term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("NO_COLOR") == ""
 
 			if isTerm {
 				msg = fmt.Sprintf("%s \033[90m(%s)\033[0m", msg, strings.Join(attrs, " "))

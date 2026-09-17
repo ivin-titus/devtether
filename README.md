@@ -87,7 +87,7 @@ Configure your system resolver to route `*.localhost` to DevTether.
 **systemd-resolved (Ubuntu, Fedora, Arch Linux):**
 ```bash
 sudo mkdir -p /etc/systemd/resolved.conf.d/
-echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~internal ~localhost" | sudo tee /etc/systemd/resolved.conf.d/devtether.conf
+echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~localhost" | sudo tee /etc/systemd/resolved.conf.d/devtether.conf
 sudo systemctl restart systemd-resolved
 ```
 
@@ -111,7 +111,6 @@ macOS has native support for domain-specific resolvers via `/etc/resolver/`:
 ```bash
 sudo mkdir -p /etc/resolver
 echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/localhost
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/internal
 ```
 </details>
 
@@ -128,7 +127,11 @@ routes:
   db.localhost: 8042
 ```
 
-See [examples/](examples/) for more configuration patterns, including proxy timeouts and DNS settings.
+Run `devtether init` to generate a fully commented configuration reference that covers
+routes, daemon settings, proxy ports/timeouts, and DNS options.
+
+> **Route changes require a daemon restart:** `devtether down && devtether up`.
+> Live reload through the IPC daemon is planned for a future release.
 
 ### Commands
 
@@ -137,11 +140,11 @@ devtether up                        # Start the routing daemon
 devtether up -d                     # Start in the background (logs to .logs/)
 devtether up -c /path/to/config     # Use a specific config file
 devtether down                      # Stop the background daemon gracefully
-devtether status                    # Show daemon status, uptime, and routes
+devtether status                    # Show daemon status (PID, uptime, route count, heap)
 devtether routes                    # Show active routes (live from daemon, or from config)
 devtether logs                      # Show or tail daemon logs
 devtether doctor                    # Check system environment for common issues
-devtether init                      # Create a starter devtether.yaml
+devtether init                      # Create a starter devtether.yaml (Flags: --daemon, --force, Linux-only: --setcap)
 devtether version                   # Print version, commit, and build date
 ```
 

@@ -22,6 +22,16 @@ type Server struct {
 	httpServer *http.Server
 	port       int
 	fallback   int
+	// bindErr records the failure that forced a fallback from the configured
+	// port. It is nil when the configured port bound successfully.
+	bindErr error
+}
+
+// BindError returns the error that forced the proxy onto its fallback port,
+// or nil when the configured port bound successfully. Callers use this to
+// explain the fallback truthfully (privilege vs occupied) instead of guessing.
+func (s *Server) BindError() error {
+	return s.bindErr
 }
 
 // NewServer creates a proxy server with the given configuration.
@@ -45,8 +55,10 @@ func NewServer(cfg config.ProxyConfig, resolver router.Resolver) *Server {
 // Listen binds the proxy to the configured port and returns the listener and bound address.
 // Port resolution order:
 //  1. Configured port (default: 80)
-//  2. If EACCES/EPERM → fallback port (8080)
-//  3. If fallback is also in use → OS-assigned port (port 0)
+//  2. If EACCES/EPERM or EADDRINUSE → fallback port (8080)
+//
+// If neither port can be bound the error is fatal; there is no OS-assigned
+// port tier.
 func (s *Server) Listen(ctx context.Context) (net.Listener, string, error) {
 	return s.bind(ctx)
 }
@@ -85,10 +97,13 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 		return listener, addr, nil
 	}
 
+	// Record the configured-port failure so callers can report the true reason.
+	s.bindErr = err
+
 	if netutil.IsPermissionError(err) {
-		logger.New("proxy").Debug(fmt.Sprintf("permission denied on port %d — trying port %d", s.port, s.fallback))
+		logger.New("proxy").Info(fmt.Sprintf("permission denied on port %d — falling back to port %d", s.port, s.fallback))
 	} else if netutil.IsAddrInUse(err) {
-		logger.New("proxy").Debug(fmt.Sprintf("port %d already in use — trying port %d", s.port, s.fallback))
+		logger.New("proxy").Info(fmt.Sprintf("port %d already in use — falling back to port %d", s.port, s.fallback))
 	} else {
 		return nil, "", fmt.Errorf("proxy: failed to bind to port %d: %w", s.port, err)
 	}
@@ -100,17 +115,8 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 		return listener, addr, nil
 	}
 
-	if netutil.IsRecoverable(err) {
-		logger.New("proxy").Info(fmt.Sprintf("port %d also unavailable — binding to OS-assigned port", s.fallback))
-	} else {
+	if !netutil.IsRecoverable(err) {
 		return nil, "", fmt.Errorf("proxy: failed to bind to fallback port %d: %w", s.fallback, err)
 	}
-
-	// Step 3: Last resort — OS-assigned port.
-	listener, err = lc.Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, "", fmt.Errorf("proxy: failed to bind to any port: %w", err)
-	}
-	addr = listener.Addr().String()
-	return listener, addr, nil
+	return nil, "", fmt.Errorf("proxy: configured port %d and fallback port %d are unavailable: %w", s.port, s.fallback, err)
 }

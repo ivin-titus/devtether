@@ -3,6 +3,7 @@ module github.com/ivin-titus/devtether
 go 1.27.1
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/miekg/dns v1.1.73
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.22.0

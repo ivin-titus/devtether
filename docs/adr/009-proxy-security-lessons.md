@@ -6,7 +6,7 @@ Date: 2026-09-08
 Accepted
 
 ## Context
-As DevTether evolves into a production-grade local reverse proxy (and prepares to introduce deep traffic inspection features), it is critical to learn from catastrophic vulnerabilities in similar industry products. This ADR codifies defense-in-depth strategies to prevent DevTether from falling victim to common architectural flaws related to state leakage, socket permissions, and proxy manipulation.
+As DevTether evolves into a resilient local reverse proxy (and prepares to introduce deep traffic inspection features), it is critical to learn from catastrophic vulnerabilities in similar industry products. This ADR codifies defense-in-depth strategies to prevent DevTether from falling victim to common architectural flaws related to state leakage, socket permissions, and proxy manipulation.
 
 We have grouped the major industry vulnerabilities into three primary categories: Cross-Request State Leakage, Request/Protocol Manipulation, and Local Privilege Escalation.
 
@@ -35,7 +35,7 @@ We have grouped the major industry vulnerabilities into three primary categories
 - **Socket Permission TOCTOU:** Docker daemon (`/var/run/docker.sock`) and Snapd (CVE-2019-7304) allowed unprivileged local users or malware to achieve root access or execute commands via misconfigured unix IPC socket permissions.
 
 **Our Defensive Posture:**
-- **Current Status (VULNERABLE - Fallback Path):** When DevTether falls back to `/tmp/devtether.sock`, there is a microsecond Time-Of-Check to Time-Of-Use (TOCTOU) race between `net.Listen` and `os.Chmod`. A malicious local script can connect before permissions are securely restricted to `0600`. (Addressed via atomicity implementations).
+- **Current Status (SAFE):** We secure the fallback path (`/tmp/devtether.sock`) by using a process-global `umask(0177)` immediately before `net.Listen("unix")`. This atomically forces the socket creation to `0600`, completely neutralizing the microsecond Time-Of-Check to Time-Of-Use (TOCTOU) race.
 
 ### 4. Web UI & Streaming Hijacking
 **Industry Failures:**
@@ -51,7 +51,7 @@ We have grouped the major industry vulnerabilities into three primary categories
 
 **Our Defensive Posture:**
 - **Current Status (SAFE):** DevTether is currently invoked manually via CLI.
-- **Future Defense (Service Installer):** When building the `devtether service install` feature, the installer MUST verify that the target binary path is owned by root and `chmod 0755`. The `.service` or `.plist` definitions must strictly drop privileges using `User=` and `Group=` directives if the proxy binds to unprivileged ports (e.g., >1024), minimizing the attack surface.
+- **Future Defense (OS-Native Service Management):** If DevTether implements OS-native service management features in the future, the integration MUST verify that the target binary path is owned by root and `chmod 0755`. The OS service definitions must strictly drop privileges using `User=` and `Group=` directives if the proxy binds to unprivileged ports (e.g., >1024), minimizing the attack surface.
 
 ### 6. Terminal Log Forging & ANSI Injection
 **Industry Failures:**
@@ -77,7 +77,7 @@ To guarantee DevTether never succumbs to these vulnerabilities, we adopt the fol
    - When TLS (and thereby HTTP/2) is eventually introduced, the proxy MUST enforce `MaxConcurrentStreams` limits and compile against Go >= 1.21.3.
 5. **Strict Origin Validation (Future Web GUI):**
    - Any future WebSocket or Server-Sent Events (SSE) endpoints MUST aggressively validate `Origin` and `Sec-Fetch-Site` headers to prevent Cross-Site WebSocket Hijacking (CSWSH).
-6. **Secure System Daemonization (Future Service Installer):**
+6. **Secure System Daemonization (Future OS-Native Services):**
    - System service installers MUST enforce strict `root:root` ownership of binaries and drop proxy execution privileges using `User=` directives when binding to unprivileged ports.
 7. **Terminal Output Sanitization:**
    - Any raw HTTP metadata (User-Agent, URI, Headers) printed to a terminal UI MUST be sanitized (e.g., `strconv.Quote`) to neutralize ANSI escape sequence injection.

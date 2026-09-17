@@ -43,7 +43,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - **Graceful Error Pages:** Introduced beautiful, informative, and structurally resilient HTML error overlays for 400, 404, and 502 proxy errors.
 - **Log Rate Limiting:** Proxy error logs are now cleanly rate-limited using a bounded, O(1) random-eviction hybrid LRU/TTL cache to prevent memory leaks and noise.
 - **Infrastructure:** Introduced a universally compatible standard Unix Makefile for building, testing, and installing (`~/.local/bin/devtether`).
-- **Engineering Standards:** Injected 10 strict, production-grade architectural rules covering edge normalization, boundary panic recovery, TOCTOU safety, streaming context, fail-fast resources, global mutation in tests, signal handler disarming, ANSI discipline, loopback isolation, and CLI error visibility.
+- **Engineering Standards:** Injected 10 strict architectural rules covering edge normalization, boundary panic recovery, TOCTOU safety, streaming context, fail-fast resources, global mutation in tests, signal handler disarming, ANSI discipline, loopback isolation, and CLI error visibility.
 - **Architectural Decision Records (ADR):** Created `ADR-007` (Defensive Edge Normalization) and `ADR-008` (Production Proxy Streaming). Amended `ADR-002` (DNS Design) and `ADR-003` (Security Model) to strictly enforce dual-stack loopback rules and boundary panic recovery.
 - **Docs Generalization:** Replaced personal domain references with generic, universally understood architectural components (`web.localhost`, `api.localhost`, `db.localhost`) in `README.md` and `PRD.md`. Layer 1 is now marked as fully Solid Enough
 

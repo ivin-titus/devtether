@@ -6,6 +6,7 @@ package router
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"sync"
 
 	"github.com/ivin-titus/devtether/internal/netutil"
@@ -62,6 +63,9 @@ func NewEngine() *Engine {
 // AddRoute maps an incoming domain to a local port with the given route type.
 func (e *Engine) AddRoute(domain, serviceName string, port int, routeType RouteType) error {
 	domain = netutil.NormalizeHost(domain)
+	if domain == "" {
+		return fmt.Errorf("route domain must not be empty")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -81,6 +85,7 @@ func (e *Engine) AddRoute(domain, serviceName string, port int, routeType RouteT
 
 // RemoveRoute deletes a domain mapping from the routing table.
 func (e *Engine) RemoveRoute(domain string) {
+	domain = netutil.NormalizeHost(domain)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.routes, domain)
@@ -114,6 +119,7 @@ func (e *Engine) Domains() []string {
 	for d := range e.routes {
 		domains = append(domains, d)
 	}
+	sort.Strings(domains)
 	return domains
 }
 
@@ -132,5 +138,6 @@ func (e *Engine) GetAllRoutes() []RouteView {
 			Type:        t.Type,
 		})
 	}
+	sort.Slice(views, func(i, j int) bool { return views[i].Domain < views[j].Domain })
 	return views
 }

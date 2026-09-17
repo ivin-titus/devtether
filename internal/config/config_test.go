@@ -42,24 +42,21 @@ func TestLoadConfig(t *testing.T) {
 		},
 		{
 			name: "routes with proxy config",
-			yaml: "routes:\n  a.localhost: 3000\nproxy:\n  port: 8080\n  timeouts:\n    read: 10s\n    write: 20s\n    idle: 30s",
+			yaml: "routes:\n  a.localhost: 3000\nproxy:\n  port: 8080\n  timeouts:\n    idle: 30s",
 			check: func(c *Config) error {
 				if c.Proxy.Port != 8080 {
 					return fmt.Errorf("expected proxy port 8080, got %d", c.Proxy.Port)
 				}
-				if c.Proxy.Timeouts.Read != "10s" {
-					return fmt.Errorf("expected read timeout 10s, got %s", c.Proxy.Timeouts.Read)
+				if c.Proxy.Timeouts.Idle != "30s" {
+					return fmt.Errorf("expected idle timeout 30s, got %s", c.Proxy.Timeouts.Idle)
 				}
 				return nil
 			},
 		},
 		{
 			name: "routes with dns config",
-			yaml: "routes:\n  a.localhost: 3000\ndns:\n  tld: [\"localhost\", \"internal\"]\n  bind: \"127.0.0.1:5353\"",
+			yaml: "routes:\n  a.localhost: 3000\ndns:\n  bind: \"127.0.0.1:5353\"",
 			check: func(c *Config) error {
-				if len(c.DNS.TLD) != 2 {
-					return fmt.Errorf("expected 2 TLDs, got %d", len(c.DNS.TLD))
-				}
 				if c.DNS.Bind != "127.0.0.1:5353" {
 					return fmt.Errorf("expected bind 127.0.0.1:5353, got %s", c.DNS.Bind)
 				}
@@ -116,9 +113,7 @@ func TestLoadConfig(t *testing.T) {
 				if c.DNS.Bind != DefaultDNSBind {
 					return fmt.Errorf("expected default DNS bind %s, got %s", DefaultDNSBind, c.DNS.Bind)
 				}
-				if len(c.DNS.TLD) != 1 || c.DNS.TLD[0] != "localhost" {
-					return fmt.Errorf("expected default TLD [localhost], got %v", c.DNS.TLD)
-				}
+
 				if c.Proxy.Timeouts.Idle != DefaultIdleTimeout.String() {
 					return fmt.Errorf("expected default idle timeout, got %s", c.Proxy.Timeouts.Idle)
 				}
@@ -143,12 +138,7 @@ func TestLoadConfig(t *testing.T) {
 			wantErr: true,
 			errMsg:  "not yet implemented",
 		},
-		{
-			name:    "dns tld local rejected",
-			yaml:    "routes:\n  a.localhost: 3000\ndns:\n  tld: [\"local\"]",
-			wantErr: true,
-			errMsg:  "reserved by mDNS",
-		},
+
 		{
 			name:    "invalid proxy port",
 			yaml:    "routes:\n  a.localhost: 3000\nproxy:\n  port: 99999",
@@ -160,6 +150,24 @@ func TestLoadConfig(t *testing.T) {
 			yaml:    "routes:\n  a.localhost: 3000\nproxy:\n  timeouts:\n    idle: not-a-duration",
 			wantErr: true,
 			errMsg:  "invalid duration",
+		},
+		{
+			name:    "removed proxy timeout rejected",
+			yaml:    "proxy:\n  timeouts:\n    write: 20s",
+			wantErr: true,
+			errMsg:  "field write not found",
+		},
+		{
+			name:    "route whitespace rejected",
+			yaml:    "routes:\n  ' app.localhost ': 3000",
+			wantErr: true,
+			errMsg:  "surrounding whitespace",
+		},
+		{
+			name:    "unknown field rejected",
+			yaml:    "routes:\n  app.localhost: 3000\nsetings:\n  daemon: true",
+			wantErr: true,
+			errMsg:  "field setings not found",
 		},
 		{
 			name: "settings config parsed",

@@ -37,11 +37,11 @@ func CheckRunning(ctx context.Context) error {
 		conn, dialErr := dialer.DialContext(ctx, "unix", socketPath)
 		if dialErr == nil {
 			_ = conn.Close()
-			return fmt.Errorf("daemon: already running on %s", socketPath)
+			return fmt.Errorf("daemon: already running on %s — run 'devtether status' to inspect it or 'devtether down' to stop it", socketPath)
 		}
 		// Permission denied = socket owned by another user. Don't mask it.
 		if netutil.IsPermissionError(dialErr) {
-			return fmt.Errorf("daemon: socket permission denied: %w", dialErr)
+			return fmt.Errorf("daemon: socket permission denied on %s (a root-owned daemon may be running; rerun with sudo): %w", socketPath, dialErr)
 		}
 		// Connection refused = stale socket from a dead process. Safe to proceed.
 	} else if !errors.Is(statErr, os.ErrNotExist) {
@@ -61,16 +61,22 @@ type Server struct {
 	engine     *router.Engine
 	httpServer *http.Server
 	socketPath string
+	configPath string
 	startTime  time.Time
 	cancelFunc context.CancelFunc
+	lockFile   *os.File
+	nonce      string
 }
 
-// NewServer initializes the IPC daemon.
-func NewServer(engine *router.Engine, cancel context.CancelFunc) *Server {
+// NewServer initializes the IPC daemon. configPath is the config file the
+// daemon loaded; it is reported by /status so a client can identify which
+// project instance it is talking to.
+func NewServer(engine *router.Engine, cancel context.CancelFunc, configPath string) *Server {
 	return &Server{
 		engine:     engine,
 		cancelFunc: cancel,
 		socketPath: SocketPath(),
+		configPath: configPath,
 	}
 }
 
@@ -81,34 +87,57 @@ func NewServer(engine *router.Engine, cancel context.CancelFunc) *Server {
 //
 //	RuntimeDir validation → flock(LOCK_EX|LOCK_NB) → PID write → stale socket cleanup → bind → serve
 func (s *Server) Start(ctx context.Context) error {
+	listener, err := s.Listen(ctx)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, listener)
+}
+
+// Listen acquires daemon ownership and binds the IPC socket before any
+// concurrent server work begins. The returned listener remains owned by s.
+func (s *Server) Listen(ctx context.Context) (net.Listener, error) {
 	// 1. Validate runtime directory (creates if needed, checks ownership).
 	if _, dirErr := RuntimeDir(); dirErr != nil {
-		return dirErr
+		return nil, dirErr
 	}
 
 	// 2. Acquire exclusive instance lock (non-blocking).
 	lockFile, lockErr := AcquireLock()
 	if lockErr != nil {
-		return lockErr
+		return nil, lockErr
 	}
-	// Keep the lock file open for the daemon's entire lifetime.
-	// The kernel releases the flock when the file is closed or the process exits.
-	defer func() { _ = lockFile.Close() }()
+	s.lockFile = lockFile
 
 	// 3. Write PID file (atomic: temp → fsync → rename).
 	if pidErr := WritePID(); pidErr != nil {
-		return pidErr
+		_ = s.lockFile.Close()
+		s.lockFile = nil
+		return nil, pidErr
 	}
-	defer RemovePID()
+	nonce, nonceErr := writeNonce()
+	if nonceErr != nil {
+		RemovePID()
+		_ = s.lockFile.Close()
+		s.lockFile = nil
+		return nil, nonceErr
+	}
+	s.nonce = nonce
 
 	// 4. Clean up stale socket from a previous crash.
 	// Under flock protection, this is safe — no other instance can race us.
 	if _, statErr := os.Stat(s.socketPath); statErr == nil {
 		if rmErr := os.Remove(s.socketPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return fmt.Errorf("daemon: failed to clear stale socket: %w", rmErr)
+			RemovePID()
+			_ = s.lockFile.Close()
+			s.lockFile = nil
+			return nil, fmt.Errorf("daemon: failed to clear stale socket: %w", rmErr)
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("daemon: failed to stat socket: %w", statErr)
+		RemovePID()
+		_ = s.lockFile.Close()
+		s.lockFile = nil
+		return nil, fmt.Errorf("daemon: failed to stat socket: %w", statErr)
 	}
 
 	// 5. Bind the Unix socket.
@@ -119,11 +148,14 @@ func (s *Server) Start(ctx context.Context) error {
 	// are bound synchronously in up.go *before* the errgroup launches Start().
 	// If the startup order changes, replace with post-creation os.Chmod.
 	oldUmask := syscall.Umask(0177)
+	defer syscall.Umask(oldUmask)
 	listener, err := lc.Listen(ctx, "unix", s.socketPath)
-	syscall.Umask(oldUmask)
 
 	if err != nil {
-		return fmt.Errorf("daemon: failed to bind unix socket: %w", err)
+		RemovePID()
+		_ = s.lockFile.Close()
+		s.lockFile = nil
+		return nil, fmt.Errorf("daemon: failed to bind unix socket: %w", err)
 	}
 
 	s.startTime = time.Now()
@@ -140,6 +172,19 @@ func (s *Server) Start(ctx context.Context) error {
 		WriteTimeout:      15 * time.Second, // Accommodates the shutdown connection-hold pattern.
 		MaxHeaderBytes:    1 << 16,          // 64KB — generous for IPC (ADR-003).
 	}
+	return listener, nil
+}
+
+// Serve accepts IPC connections on listener until ctx is cancelled.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
+	defer RemovePID()
+	defer removeNonce()
+	defer func() {
+		if s.lockFile != nil {
+			_ = s.lockFile.Close()
+			s.lockFile = nil
+		}
+	}()
 
 	// Graceful shutdown when context is cancelled.
 	//nolint:gosec // Background server goroutine does not need request context
@@ -192,16 +237,18 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 
 // StatusResponse is the JSON representation of daemon status.
 type StatusResponse struct {
-	PID      int     `json:"pid"`
-	Uptime   string  `json:"uptime"`
-	Routes   int     `json:"routes"`
-	MemAlloc uint64  `json:"mem_alloc"`
+	PID        int    `json:"pid"`
+	Uptime     string `json:"uptime"`
+	Routes     int    `json:"routes"`
+	MemAlloc   uint64 `json:"mem_alloc"`
+	ConfigPath string `json:"config_path"`
 }
 
 // handleStatus serves the GET /status endpoint.
 // It returns a JSON object containing the daemon's process ID (pid),
 // the duration it has been running (uptime), the number of active
-// proxy rules (routes), and the current heap allocation in bytes (mem_alloc).
+// proxy rules (routes), the current heap allocation in bytes (mem_alloc),
+// and the config file it loaded (config_path).
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -212,10 +259,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	runtime.ReadMemStats(&m)
 
 	resp := StatusResponse{
-		PID:      os.Getpid(),
-		Uptime:   time.Since(s.startTime).Truncate(time.Second).String(),
-		Routes:   len(s.engine.GetAllRoutes()),
-		MemAlloc: m.Alloc,
+		PID:        os.Getpid(),
+		Uptime:     time.Since(s.startTime).Truncate(time.Second).String(),
+		Routes:     len(s.engine.GetAllRoutes()),
+		MemAlloc:   m.Alloc,
+		ConfigPath: s.configPath,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -234,6 +282,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("X-Devtether-Nonce") != s.nonce {
+		http.Error(w, "invalid IPC nonce", http.StatusForbidden)
 		return
 	}
 

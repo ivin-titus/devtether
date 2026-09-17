@@ -12,7 +12,15 @@ DevTether's internal architecture relies on 4 independent engines (conceptually 
 
 ## Decision
 
-Use a **single `devtether.yaml`** with distinct top-level keys for each engine:
+Use a **single `devtether.yaml`** with distinct top-level keys for each engine.
+
+> [!NOTE]
+> **Beta Scope & TLD Simplification**
+> The schema below illustrates the unified structure for all planned engines. However, in the current Beta (Engine 1 only), only the `routes:`, `settings:`, `proxy:`, and `dns:` sections are active. Furthermore, to simplify configuration and prevent route bypasses, the `dns.tld` setting was removed in favor of hardcoding `.localhost`. `.internal` is reserved for the future Engine 3.
+
+### Currently Supported (Engine 1)
+
+> **TLD Restriction**: In the current Engine 1 (Beta), the system strictly enforces the `.localhost` TLD. The configuration does **not** support expanding or modifying the DNS TLD (e.g. attempting to add `.internal` or custom TLDs will not work). This simplification prevents route bypasses and OS resolver complexity.
 
 ```yaml
 # Engine 1 (Layer 1): Static Routes
@@ -20,6 +28,28 @@ routes:
   portfolio.localhost: 3222
   job-flow.localhost: 3223
 
+# Global Settings
+settings:
+  daemon: false
+  verbose: false
+  log_path: .logs/devtether.log
+
+proxy:
+  port: 80
+  timeouts:
+    idle: 120s
+    read_header: 10s
+
+dns:
+  bind: "127.0.0.1:53"
+  # Note: `tld` array is NOT supported in Engine 1. It is hardcoded to `.localhost`.
+```
+
+### Planned for Future (Engines 2-4)
+
+> **Future TLD Expansion**: When Engine 3 (Tunnel/LAN) is released, DevTether will officially support expanding the DNS scope to `.internal` and potentially other TLDs for LAN and WAN sharing.
+
+```yaml
 # Engine 2 (Layer 2): Orchestrated Services
 orchestrate:
   api:
@@ -38,19 +68,6 @@ access:
   enabled: true
   require_token: ["api.*", "admin.*"]
   public: ["app.*", "docs.*"]
-
-# Global Settings
-proxy:
-  port: 80
-  tls: false
-  timeouts:
-    read: 30s
-    write: 60s
-    idle: 120s
-
-dns:
-  tld: ["localhost", "internal"]
-  bind: "127.0.0.1:53"
 ```
 
 ### Design Principles

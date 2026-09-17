@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strings"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -21,6 +21,7 @@ import (
 	"github.com/ivin-titus/devtether/internal/daemon"
 	"github.com/ivin-titus/devtether/internal/dns"
 	"github.com/ivin-titus/devtether/internal/logger"
+	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/proxy"
 	"github.com/ivin-titus/devtether/internal/router"
 	"github.com/spf13/cobra"
@@ -53,7 +54,6 @@ Background mode can also be enabled via settings.daemon in devtether.yaml.`,
 }
 
 func runUp(cmd *cobra.Command, args []string) error {
-	logger.Setup(verbose)
 	log := logger.New("devtether")
 	log.Debug("starting...")
 
@@ -61,7 +61,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s not found. Create one with:\n\n  devtether init", configPath)
+			return configMissingHint(configPath)
 		}
 		return fmt.Errorf("config error: %w", err)
 	}
@@ -69,12 +69,13 @@ func runUp(cmd *cobra.Command, args []string) error {
 	// 1.5. Apply config-driven verbose if CLI flag wasn't explicitly set.
 	if !cmd.Flags().Changed("verbose") && cfg.Settings.Verbose {
 		verbose = true
-		logger.Setup(true)
 	}
 
 	// 1.6. Daemonize if requested via -d flag or settings.daemon config.
 	detach, _ := cmd.Flags().GetBool("detach")
-	if !cmd.Flags().Changed("detach") && cfg.Settings.Daemon {
+	if !cmd.Flags().Changed("detach") && os.Getenv("DEVTETHER_FOREGROUND") == "1" {
+		detach = false
+	} else if !cmd.Flags().Changed("detach") && cfg.Settings.Daemon {
 		detach = true
 	}
 	if detach && os.Getenv("DEVTETHER_FORKED") == "" {
@@ -89,7 +90,13 @@ func runUp(cmd *cobra.Command, args []string) error {
 
 	// 3. Populate static routes (Engine 1).
 	routeLog := logger.New("route")
-	for domain, port := range cfg.Routes {
+	domains := make([]string, 0, len(cfg.Routes))
+	for domain := range cfg.Routes {
+		domains = append(domains, domain)
+	}
+	sort.Strings(domains)
+	for _, domain := range domains {
+		port := cfg.Routes[domain]
 		if addErr := engine.AddRoute(domain, "static", port, router.RouteStatic); addErr != nil {
 			return fmt.Errorf("failed to register route %s: %w", domain, addErr)
 		}
@@ -106,17 +113,17 @@ func runUp(cmd *cobra.Command, args []string) error {
 
 	// 4.5. Pre-flight check: ensure another daemon instance is not already running.
 	if checkErr := daemon.CheckRunning(ctx); checkErr != nil {
-		return checkErr
+		return withRootDaemonHint(checkErr)
 	}
 
 	// 5. Create servers.
 	dnsServer := dns.NewServer(cfg.DNS, engine)
 	proxyServer := proxy.NewServer(cfg.Proxy, engine)
-	ipcDaemon := daemon.NewServer(engine, cancel)
+	ipcDaemon := daemon.NewServer(engine, cancel, configPath)
 
 	// --- DYNAMIC UI: STARTING ---
 	dim, reset := "\033[90m", "\033[0m"
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
 		dim, reset = "", ""
 	}
 
@@ -127,14 +134,17 @@ func runUp(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\n  DevTether %s%s%s\n\n", dim, v, reset)
 	fmt.Printf("  %sStarting...%s\r", dim, reset)
 
-	// 6. Synchronous Binds (DNS & Proxy).
+	// 6. Synchronous Binds (DNS, Proxy, and IPC).
 	// We bind before starting goroutines to flush any fallback logs
 	// *before* the UI prints its dynamic summary.
+	dnsAddr := ""
 	dnsConn, err := dnsServer.Listen(ctx)
 	if err != nil {
 		dnsLog := logger.New("dns")
 		dnsLog.Debug("failed to bind", "error", err)
 		dnsLog.Debug("the proxy will still work — configure DNS manually or use /etc/hosts")
+	} else {
+		dnsAddr = dnsConn.LocalAddr().String()
 	}
 
 	proxyListener, proxyAddr, err := proxyServer.Listen(ctx)
@@ -144,24 +154,57 @@ func runUp(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("fatal proxy bind error: %w", err)
 	}
+	ipcListener, err := ipcDaemon.Listen(ctx)
+	if err != nil {
+		if dnsConn != nil {
+			_ = dnsConn.Close()
+		}
+		_ = proxyListener.Close()
+		return fmt.Errorf("fatal IPC bind error: %w", err)
+	}
 
 	g, gCtx := errgroup.WithContext(ctx)
+	workerDone := make(chan struct{}, 4)
+	workersComplete := make(chan struct{})
+	workerCount := 0
+	runWorker := func(fn func() error) {
+		workerCount++
+		g.Go(func() error {
+			defer func() { workerDone <- struct{}{} }()
+			return fn()
+		})
+	}
 
 	// DNS engine (Serving on bound packet connection) — non-fatal.
 	if dnsConn != nil {
-		g.Go(func() error {
+		runWorker(func() error {
 			return dnsServer.Serve(gCtx, dnsConn)
 		})
 	}
 
 	// IPC daemon.
-	g.Go(func() error {
-		return ipcDaemon.Start(gCtx)
+	runWorker(func() error {
+		return ipcDaemon.Serve(gCtx, ipcListener)
 	})
 
 	// Reverse proxy (Serving on bound listener).
-	g.Go(func() error {
+	runWorker(func() error {
 		return proxyServer.Serve(gCtx, proxyListener, proxyAddr)
+	})
+
+	if healthCheck := printStartupSummary(gCtx, cfg, startupInfo{
+		proxyAddr: proxyAddr,
+		bindErr:   proxyServer.BindError(),
+		dnsAddr:   dnsAddr,
+	}); healthCheck != nil {
+		runWorker(healthCheck)
+	}
+	g.Go(func() error {
+		for range workerCount {
+			<-workerDone
+		}
+		close(workersComplete)
+		return nil
 	})
 
 	// Signal handler.
@@ -173,17 +216,20 @@ func runUp(cmd *cobra.Command, args []string) error {
 			log.Info(fmt.Sprintf("received %v, shutting down...", sig))
 			signal.Stop(sigCh)
 			cancel()
-			// Hard deadline: force exit if graceful shutdown hangs.
-			time.AfterFunc(5*time.Second, func() {
+			timer := time.NewTimer(15 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-workersComplete:
+				return nil
+			case <-timer.C:
 				fmt.Fprintln(os.Stderr, "[devtether] shutdown timed out — force exiting")
-				os.Exit(1)
-			})
+				os.Exit(1) // Authorized watchdog exception: graceful shutdown is deadlocked.
+				return nil
+			}
 		case <-gCtx.Done():
 		}
 		return nil
 	})
-
-	printStartupSummary(gCtx, cfg, proxyAddr)
 
 	// 6.5. Readiness Notification.
 	// If we were spawned by daemonize(), signal readiness to the parent via FD 3.
@@ -192,11 +238,16 @@ func runUp(cmd *cobra.Command, args []string) error {
 	if os.Getenv("DEVTETHER_FORKED") == "1" {
 		pipe := os.NewFile(3, "pipe")
 		if pipe != nil {
-			// Write the dynamic proxy port back to the parent as JSON.
-			_ = json.NewEncoder(pipe).Encode(map[string]interface{}{
-				"port": proxyAddr,
-				"pid":  os.Getpid(),
-			})
+			// Write the bind results back to the parent as JSON.
+			payload := readinessPayload{
+				Port:           proxyAddr,
+				PID:            os.Getpid(),
+				ConfiguredPort: cfg.Proxy.Port,
+				Reason:         classifyBindFailure(proxyServer.BindError()),
+			}
+			if err := json.NewEncoder(pipe).Encode(payload); err != nil {
+				log.Error("failed to signal daemon readiness", err)
+			}
 			_ = pipe.Close()
 		}
 	}
@@ -222,31 +273,122 @@ func isBackendOnline(ctx context.Context, port int) bool {
 	return false
 }
 
-func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr string) {
+// configMissingHint returns the shared recovery hint for a missing config file,
+// keeping `up` and `doctor` guidance consistent.
+func configMissingHint(path string) error {
+	return fmt.Errorf("%s not found. Create one with:\n\n  devtether init", path)
+}
+
+// noRoutesHint points the user at their config file when it exists but defines
+// no routes. `devtether init` cannot help here — it exits non-zero when the
+// file already exists.
+func noRoutesHint(path string) string {
+	return fmt.Sprintf("Edit %s to add routes, then restart the daemon", path)
+}
+
+// dnsUnavailableNotice explains the consequence of a total DNS bind failure.
+func dnsUnavailableNotice() string {
+	return "DNS unavailable — managed *.localhost domains will not resolve. See README: Post-Install Setup."
+}
+
+// Stable reasons the proxy may fall back from its configured port.
+const (
+	fallbackReasonPrivilege   = "privilege"
+	fallbackReasonOccupied    = "occupied"
+	fallbackReasonUnavailable = "unavailable"
+)
+
+// classifyBindFailure maps a proxy bind error to a stable reason code that can
+// cross the readiness pipe without OS-specific wording.
+func classifyBindFailure(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case netutil.IsPermissionError(err):
+		return fallbackReasonPrivilege
+	case netutil.IsAddrInUse(err):
+		return fallbackReasonOccupied
+	default:
+		return fallbackReasonUnavailable
+	}
+}
+
+// proxyFallbackNotice returns a truthful explanation when the proxy bound a
+// port other than the configured one, or "" when the configured port bound
+// successfully. reason is a code produced by classifyBindFailure.
+func proxyFallbackNotice(configuredPort int, boundAddr, reason string) string {
+	if reason == "" {
+		return ""
+	}
+	_, portStr, err := net.SplitHostPort(boundAddr)
+	if err != nil {
+		return ""
+	}
+	boundPort, err := strconv.Atoi(portStr)
+	if err != nil || boundPort == configuredPort {
+		return ""
+	}
+	switch reason {
+	case fallbackReasonPrivilege:
+		if runtime.GOOS == "linux" {
+			return fmt.Sprintf("devtether fell back to port %d: binding port %d requires root access or setcap", boundPort, configuredPort)
+		}
+		return fmt.Sprintf("devtether fell back to port %d: binding port %d requires administrative privileges", boundPort, configuredPort)
+	case fallbackReasonOccupied:
+		return fmt.Sprintf("devtether fell back to port %d: port %d is already in use", boundPort, configuredPort)
+	default:
+		return fmt.Sprintf("devtether fell back to port %d: port %d is unavailable", boundPort, configuredPort)
+	}
+}
+
+// readinessPayload is the JSON handshake sent from a forked child to its parent
+// over the readiness pipe (FD 3).
+type readinessPayload struct {
+	Port           string `json:"port"`
+	PID            int    `json:"pid"`
+	ConfiguredPort int    `json:"configured_port"`
+	Reason         string `json:"reason"`
+}
+
+// startupInfo carries the bind results rendered in the startup summary.
+type startupInfo struct {
+	proxyAddr string
+	// bindErr is the proxy's configured-port bind failure, if any.
+	bindErr error
+	// dnsAddr is the bound DNS address, or "" when DNS is unavailable.
+	dnsAddr string
+}
+
+func printStartupSummary(ctx context.Context, cfg *config.Config, info startupInfo) func() error {
 	// --- DYNAMIC UI: STARTED ---
 	dim, green, yellow, reset := "\033[90m", "\033[92m", "\033[33m", "\033[0m"
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
 		dim, green, yellow, reset = "", "", "", ""
 	}
 
 	fmt.Printf("  %sStarted%s    \n", green, reset)
 
-	if len(cfg.Routes) == 0 {
-		fmt.Printf("\n  %s○ No routes defined in devtether.yaml%s\n", yellow, reset)
-		fmt.Println("    Create one with: devtether init")
-		fmt.Println()
-		return
+	// Report the DNS engine state: without it, managed domains do not resolve.
+	if info.dnsAddr == "" {
+		fmt.Printf("  %s⚠ %s%s\n", yellow, dnsUnavailableNotice(), reset)
+	} else {
+		fmt.Printf("  %sDNS listening on %s%s\n", dim, info.dnsAddr, reset)
 	}
 
-	// Determine proxy port logic for URLs and Fallback warnings
-	_, proxyPort, _ := net.SplitHostPort(proxyAddr)
-	if proxyPort != "80" {
-		if runtime.GOOS == "linux" {
-			fmt.Printf("  %s> Note: devtether fell back to port %s due to lack of root access or missing setcap settings.%s\n", dim, proxyPort, reset)
-		} else {
-			fmt.Printf("  %s> Note: devtether fell back to port %s due to lack of administrative privileges.%s\n", dim, proxyPort, reset)
-		}
+	if len(cfg.Routes) == 0 {
+		fmt.Printf("\n  %s○ No routes defined in %s%s\n", yellow, configPath, reset)
+		fmt.Printf("    %s\n", noRoutesHint(configPath))
+		fmt.Println()
+		return nil
 	}
+
+	// Only mention a fallback when the configured port did not bind.
+	if notice := proxyFallbackNotice(cfg.Proxy.Port, info.proxyAddr, classifyBindFailure(info.bindErr)); notice != "" {
+		fmt.Printf("  %s> Note: %s.%s\n", dim, notice, reset)
+	}
+
+	// Derive the port used in the route URLs.
+	_, proxyPort, _ := net.SplitHostPort(info.proxyAddr)
 	fmt.Println()
 	fmt.Println("Tethered Routes:")
 
@@ -283,8 +425,7 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 	}
 	fmt.Println()
 
-	// Launch realtime health checker
-	go func() {
+	return func() error {
 		// Initial check runs immediately
 		ticker := time.NewTicker(1500 * time.Millisecond)
 		defer ticker.Stop()
@@ -335,12 +476,12 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, proxyAddr stri
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return nil
 			case <-ticker.C:
 				check()
 			}
 		}
-	}()
+	}
 }
 
 // daemonize spawns a detached child process of DevTether and exits the parent.
@@ -364,7 +505,9 @@ func daemonize(cfg *config.Config) error {
 
 	logFile := filepath.Join(logDir, "devtether.log")
 	//nolint:gosec // Log files use 0644 — readable by owner and group for debugging
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Start each detached daemon with a bounded log lifetime. A fresh run owns a
+	// fresh log rather than retaining unbounded output from previous runs.
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file %s: %w", logFile, err)
 	}
@@ -399,6 +542,11 @@ func daemonize(cfg *config.Config) error {
 	// Parent closes its copy of the write end and the log file.
 	_ = writeEnd.Close()
 	_ = f.Close()
+	if err := readEnd.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		_ = readEnd.Close()
+		_ = child.Process.Kill()
+		return fmt.Errorf("failed to set readiness deadline: %w", err)
+	}
 
 	// Block until the child writes to the pipe or exits.
 	// If the child crashes before binding, Read() returns EOF instantly.
@@ -407,25 +555,21 @@ func daemonize(cfg *config.Config) error {
 	_ = readEnd.Close()
 
 	if readErr != nil {
+		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+			_ = child.Process.Kill()
+			_, _ = child.Process.Wait()
+			return fmt.Errorf("daemon startup timed out — child was terminated; check logs at %s", logFile)
+		}
 		if errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("daemon crashed during startup — check logs at %s", logFile)
 		}
 		return fmt.Errorf("readiness check failed: %w", readErr)
 	}
 
-	var payload struct {
-		Port string `json:"port"`
-		Pid  int    `json:"pid"`
-	}
+	var payload readinessPayload
 	if err := json.Unmarshal(buf[:n], &payload); err == nil {
-		if !strings.HasSuffix(payload.Port, ":80") {
-			parts := strings.Split(payload.Port, ":")
-			port := parts[len(parts)-1]
-			if runtime.GOOS == "linux" {
-				fmt.Printf("⚠ DevTether fell back to port %s (missing sudo or setcap)\n", port)
-			} else {
-				fmt.Printf("⚠ DevTether fell back to port %s (missing administrative privileges)\n", port)
-			}
+		if notice := proxyFallbackNotice(payload.ConfiguredPort, payload.Port, payload.Reason); notice != "" {
+			fmt.Printf("⚠ %s\n", notice)
 		}
 	}
 

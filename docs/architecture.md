@@ -51,6 +51,9 @@ graph TB
 ### The Unified Interface (CLI & GUI)
 DevTether operates on a **Unified Interface** principle. The Web GUI (`devtether.localhost`) is completely stateless and lazy-loaded (it is NOT a heavy background process). Both the CLI (e.g., `devtether stop api`) and the Web GUI call the exact same internal **IPC Daemon REST API**. This guarantees zero DRY violations — whatever is possible in the GUI is equally possible via the CLI.
 
+### Onboarding (Interactive Wizard)
+DevTether provides a seamless interactive setup flow via `devtether init`. This command dynamically assesses the user's OS and TTY environment to generate a safe `devtether.yaml` configuration. It supports declarative overrides (e.g., `--daemon`, `--force`) and native OS-aware capabilities (such as applying `setcap` on Linux automatically) while safely bypassing prompts in CI/CD environments.
+
 ---
 
 ## Shared Infrastructure
@@ -63,7 +66,7 @@ The DNS engine intercepts UDP queries on port 53 for configured TLDs and resolve
 - Default bind: `127.0.0.1:53` (loopback only)
 - Fallback chain: `53` → `5353` → `Non-Fatal Error` (proxy still works without DNS)
 - LAN mode bind: `0.0.0.0:53` (all interfaces)
-- Responds to A record queries for configured TLDs (`.localhost`, `.internal`, `.test`)
+- Responds to A record queries for configured TLDs (e.g. `.localhost`)
 - Returns `127.0.0.1` in solo mode, or the host's LAN IP in `--lan` mode
 - All non-matching queries receive `NXDOMAIN` — DevTether never forwards upstream
 - LAN IP is cached on startup and refreshed on network changes (not per-query)
@@ -107,7 +110,7 @@ type Target struct {
 
 - Protected by `sync.RWMutex` for concurrent read/write safety
 - Shared by both static routes and orchestrated services
-- Hot-reloadable via the IPC daemon (no restart needed)
+- Route changes require a daemon restart: `devtether down && devtether up`. Live reload via IPC is not available in the current beta.
 
 ### IPC Daemon (`internal/daemon`)
 
@@ -115,8 +118,13 @@ Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication
 
 **Instance Ownership (ADR-003):**
 - Primary authority: `flock(LOCK_EX)` on `devtether.lock` ensures exact instance ownership without race conditions. Kernel releases the lock on exit.
-- Secondary authority: `devtether.pid` for diagnostics.
+- Secondary authority: `devtether.pid` for diagnostics, and `devtether.nonce` for authenticated shutdown.
 - Liveness check: Background goroutines block on `flock(LOCK_EX)` against the lock file for instant notification of daemon death (zero polling).
+
+**Daemon Startup Sequence & Readiness:**
+- **`flock`**: Acquires exclusive filesystem lock before any other socket action.
+- **`PID` / Socket Bind**: Writes PID file, then securely creates/binds the Unix socket.
+- **`Readiness Pipe`**: In detached (`-d`) mode, the parent waits on an anonymous pipe. Only after all core servers (DNS, proxy, IPC) successfully bind does the child write a JSON readiness payload.
 
 **Socket location & Security:**
 - Default: `$XDG_RUNTIME_DIR/devtether/devtether.sock`
@@ -130,7 +138,7 @@ Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication
 |--------|------|---------|
 | `GET` | `/routes` | List all active routes |
 | `GET` | `/status` | Get daemon uptime, PID, route count, and heap allocation |
-| `POST` | `/shutdown` | Trigger a graceful shutdown (connection remains held open until complete) |
+| `POST` | `/shutdown` | Trigger a graceful shutdown (requires `nonce` parameter matching the daemon's startup nonce) |
 | `POST` | `/services` | **[Planned]** Add a route or orchestrated service |
 | `DELETE` | `/services?domain=X` | **[Planned]** Remove a route or stop a service |
 
@@ -224,8 +232,7 @@ devtether/
 │   ├── architecture.md         # This file
 │   └── adr/                    # Architectural Decision Records
 │
-├── examples/                    # Example config files
-├── devtether.yaml               # Local config (gitignored)
+├── devtether.yaml               # Local config (gitignored, created by \`devtether init\`)
 ├── go.mod
 ├── go.sum
 ├── LICENSE
@@ -248,7 +255,7 @@ devtether/
 ### The Stateless Web GUI (`devtether.localhost`)
 The Web GUI is an ultra-lightweight (Vanilla JS / Preact) dashboard served internally via the Proxy Engine.
 - **Zero State:** It acts strictly as a visual editor for `devtether.yaml` and a consumer of the IPC Daemon's REST API.
-- **Hot Reloading:** When a user clicks "Add Service" in the GUI, it updates the YAML file via the IPC API, triggering the exact same hot-reload flow as if they edited the file via CLI.
+- **Updates:** When a user clicks "Add Service" in the GUI, it updates the YAML file via the IPC API. (Note: Hot-reload via IPC is planned; currently, route changes require a daemon restart).
 - **Network Inspector:** Buffers requests using `sync.Pool` (adhering to zero-bloat engineering standards) and streams them over the IPC socket for webhook inspection and replay.
 
 ### Unified Logging Architecture
@@ -271,16 +278,15 @@ The command `devtether stop <service>` instructs the IPC Daemon to coordinate ac
 
 ```
 1. Load devtether.yaml
-2. Initialize Router (empty)
-3. Populate Router from `routes:` section (static)
-4. Start DNS Engine (goroutine)
-5. Start Proxy Engine (goroutine, with http.Server)
-6. Start IPC Daemon (goroutine)
-7. If `orchestrate:` section exists:
+2. Check for existing daemon (`CheckRunning`)
+3. Initialize Router and populate from `routes:`
+4. Start IPC Daemon (`flock`, `pid`, `nonce`, bind Unix socket)
+5. Notify parent of readiness (if daemonized)
+6. Start DNS Engine (goroutine)
+7. Start Proxy Engine (goroutine, with http.Server)
+8. If `orchestrate:` section exists:
    a. For each service: allocate port → add route → spawn process
-8. If `--lan`: switch to 0.0.0.0 binding, start mDNS broadcast
-9. If `--tunnel`: connect to relay via WebSocket
-10. Block on signal handler (SIGINT/SIGTERM)
+9. Block on signal handler (SIGINT/SIGTERM) or watchdog failure
 ```
 
 ### Shutdown (`Ctrl+C` or `devtether down`)

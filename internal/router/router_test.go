@@ -1,9 +1,6 @@
 package router
 
-import (
-	"sort"
-	"testing"
-)
+import "testing"
 
 func TestEngine_AddAndResolve(t *testing.T) {
 	e := NewEngine()
@@ -40,11 +37,17 @@ func TestEngine_ResolveNotFound(t *testing.T) {
 
 func TestEngine_RemoveRoute(t *testing.T) {
 	e := NewEngine()
-	_ = e.AddRoute("api.localhost", "api", 8080, RouteStatic)
-	e.RemoveRoute("api.localhost")
+	_ = e.AddRoute("Api.Localhost", "api", 8080, RouteStatic)
+	e.RemoveRoute("API.LOCALHOST")
 
 	if _, ok := e.Resolve("api.localhost"); ok {
 		t.Fatalf("expected ok=false after removal, got ok=true")
+	}
+}
+
+func TestEngine_AddRouteRejectsEmptyDomain(t *testing.T) {
+	if err := NewEngine().AddRoute("", "api", 8080, RouteStatic); err == nil {
+		t.Fatal("AddRoute() error = nil, want empty domain error")
 	}
 }
 
@@ -55,7 +58,6 @@ func TestEngine_Domains(t *testing.T) {
 	_ = e.AddRoute("c.localhost", "c", 5000, RouteOrchestrated)
 
 	domains := e.Domains()
-	sort.Strings(domains)
 
 	if len(domains) != 3 {
 		t.Fatalf("expected 3 domains, got %d", len(domains))

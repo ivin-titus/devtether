@@ -5,7 +5,7 @@
 
 ## Context
 
-DevTether embeds a DNS server (`miekg/dns`) to resolve configured TLDs (`.localhost`, `.local`, `.test`) to the developer's machine. This eliminates the need for manual `/etc/hosts` editing.
+DevTether embeds a DNS server (`miekg/dns`) to resolve the `.localhost` TLD (and eventually `.internal` for Engine 3) to the developer's machine. This eliminates the need for manual `/etc/hosts` editing.
 
 However, running a DNS server introduces significant security risks:
 
@@ -15,7 +15,7 @@ However, running a DNS server introduces significant security risks:
 
 ## Decision
 
-1. **Non-recursive by design** — DevTether will **never** forward DNS queries to upstream resolvers. It only answers queries for its own configured TLDs. All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision.
+1. **Non-recursive by design** — DevTether will **never** forward DNS queries to upstream resolvers. It only answers queries for the `.localhost` TLD (and `.internal` in the future Engine 3). All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision. *(Note: Restricting the TLD to `.localhost` is a strict YAGNI simplification. Custom TLD arrays will only be supported if genuine user demand arises).*
 2. **Loopback-only by default** — DNS binds to `127.0.0.1:53` by default. It only binds to `0.0.0.0:53` when `--lan` mode is explicitly enabled.
 3. **Cached LAN IP** — The local IP is resolved once on startup and cached. It is refreshed only on detected network changes (interface up/down events), not per-query.
 

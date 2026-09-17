@@ -29,4 +29,3 @@ Each ADR follows this structure:
 
 - [Architecture Overview](../architecture.md) — system design and package responsibilities
 - [Engineering Standards](../engineering-standards.md) — code quality rules for contributors
-

@@ -26,6 +26,8 @@ The daemon lifecycle architecture is **fundamentally broken** for concurrent and
 
 ---
 
+> **09/17/2026 update:** a product-level blind-spot pass (real user journeys, CLI/DX, docs-as-product) was added as **§15 (findings DX-1…DX-18)** and sources the new **Subphase 3.4 — Product & DX Polish / Missing Pieces** in `implementation_plan.md`. DX severity distribution: 0 Critical, 2 High (DX-1, DX-18), 8 Medium, 8 Low, 0 Info — none are caught by the current test suite. DX-18 additionally flags that §13.1's completion assessment is not supported by the shipped tree; see that finding before relying on the Subphase 3.3 open/closed counts. The Risk Summary table above covers the three original passes only and is intentionally left unmodified.
+
 ## 2. Methodology
 
 ### Phase 1 & 2 Audits
@@ -134,279 +136,84 @@ The daemon lifecycle architecture is **fundamentally broken** for concurrent and
 
 ### Finding 18: `logs -f` Zombie Trap
 - **Severity:** High
-- **Location:** [logs.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/logs.go) (tailFollow loop)
-- **Status:** ⏳ Open (Subphase 2.6)
-- **Description:** `devtether logs -f` uses a naive `f.Read()` loop. After `devtether down`, it hangs indefinitely. Since the binary is named `devtether`, `top` shows it as a running daemon instance.
-- **Fix:** ~~Poll `CheckRunning` every 1s.~~ **Revised:** Use blocking `syscall.Flock(LOCK_EX)` on the daemon's lock file in a background goroutine. Blocks in the kernel until the daemon exits. Zero polling. See `premortem_2.6_2.7.md` Anomaly 1.
+- **Location:** [logs.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/logs.go)
+- **Status:** ✅ Resolved (Subphase 2.6/2.7)
+- **Description:** `devtether logs -f` hung on EOF. Fixed via blocking `syscall.Flock(LOCK_EX)` in a background goroutine instead of polling.
 
 ### Finding 19: The 100ms Shutdown Race Condition
 - **Severity:** High
-- **Location:** [daemon.go:224-227](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L224-L227)
-- **Status:** ⏳ Open (Subphase 2.6)
-- **Description:** `handleShutdown` sends HTTP 200 then sleeps 100ms before calling `cancelFunc()`. `devtether down` exits before the socket is deleted. A rapid `up` hits the dying socket and fails with `already running`.
-- **Fix:** ~~Poll `CheckRunning` every 50ms.~~ **Revised:** Remove the 100ms sleep, use `http.Flusher.Flush()` + immediate `cancelFunc()`, and block `handleShutdown` on `<-r.Context().Done()`. `devtether down` drains the response body (`io.Copy(io.Discard, resp.Body)`) — EOF = shutdown complete. Zero polling. See `premortem_2.6_2.7.md` Anomaly 2.
+- **Location:** [daemon.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go)
+- **Status:** ✅ Resolved (Subphase 2.6)
+- **Description:** `devtether down` completed before socket was deleted. Fixed via HTTP connection-hold (`<-r.Context().Done()`) until shutdown completes.
 
 ### Finding 20: 5-Second Ghost Port Bind Window
 - **Severity:** High
-- **Location:** [proxy/server.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/proxy/server.go) (Shutdown timeout), [up.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/up.go)
-- **Status:** ⏳ Open (Subphase 2.6)
-- **Description:** After context cancellation, the IPC socket is unlinked instantly but the proxy holds TCP ports for up to 5 seconds. A `devtether up` during this window passes the IPC check but fails on TCP bind.
-- **Fix:** ~~Verify process death via `Signal(0)`.~~ **Revised:** Fully subsumed by the connection-held-open pattern in F19. The HTTP connection stays alive during the entire graceful shutdown (including the proxy's 5s drain). No PID checking needed. See `premortem_2.6_2.7.md` Anomaly 2.
+- **Location:** [proxy/server.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/proxy/server.go)
+- **Status:** ✅ Resolved (Subphase 2.6)
+- **Description:** TCP ports were held during graceful shutdown. Fully subsumed by the connection-held-open fix in F19.
 
 ### Finding 21: Silent Port Fallback in Daemon Mode
-- **Severity:** Medium (reclassified from High — it is a UX issue, not a data-loss or security issue)
-- **Location:** [up.go:370](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/up.go#L370)
-- **Status:** ⏳ Open (Subphase 2.6)
-- **Description:** When `up -d` forks, the child prints the rich UI (including port fallback warnings) to the log file. The parent only prints PID. User assumes port 80 was bound.
-- **Fix:** ~~Poll `/status` with timeout.~~ **Revised:** Use anonymous pipe (`os.Pipe()` + `cmd.ExtraFiles`). Child writes JSON payload (bound port) to fd 3 after all servers bind. Parent blocks on `readEnd.Read()`. EOF = child crash. Zero polling. See `premortem_2.6_2.7.md` Anomaly 4.
+- **Severity:** Medium
+- **Location:** [up.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/up.go)
+- **Status:** ✅ Resolved (Subphase 2.6)
+- **Description:** Port fallback silently logged to file. Fixed via anonymous pipe passing JSON payload back to the foreground parent.
 
 ---
 
 ## 5. Detailed Findings — Architectural Security Audit
 
 > [!CAUTION]
-> These findings represent **fundamental design defects**, not implementation bugs. The current daemon lifecycle architecture lacks the minimum viable security and reliability infrastructure required by ADR-003 and ADR-009. Incremental patches will not resolve the underlying problems.
+> [!CAUTION]
+> These findings represented fundamental design defects in the daemon lifecycle that have now been fully resolved.
 
 ### Finding A1: No Instance Ownership Mechanism (flock)
-
 - **Severity:** Critical
-- **ADR Violation:** ADR-003 ("flock on lock file as primary instance ownership")
-- **Location:** [daemon.go:30-48](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L30-L48) (`CheckRunning`), [daemon.go:78-141](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L78-L141) (`Start`)
+- **Location:** [daemon.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go)
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-The daemon has **zero** atomic instance ownership. The only instance detection is `CheckRunning()`, which performs:
-1. `os.Stat(socketPath)` — check if socket file exists
-2. `net.Dialer.DialContext()` — probe if something is listening
-
-This is a textbook TOCTOU (Time-Of-Check to Time-Of-Use) race. Between the check and the subsequent `Listen()`, an arbitrary amount of time passes (config loading, router setup, DNS listen, proxy listen — 100-500ms). Another process can pass the same check in that window.
-
-#### Confirmed Failure Scenarios
-
-| Scenario | Outcome |
-|---|---|
-| Two simultaneous `devtether up` | Both pass `CheckRunning`. One binds socket; the other crashes with `address already in use`. |
-| `devtether up -d` × 2 rapid | Both parents pass `CheckRunning`. Both spawn children. Children race on socket bind. Loser crashes silently into log file. User has no idea which one won. |
-| SIGKILL + rapid `up; up` | Both processes find stale socket. One removes it. The other fails on `os.Remove` (file gone) or races to `Listen`. |
-
-#### How Mature Tools Solve This
-
-**PostgreSQL** (gold standard): Acquires an exclusive `flock(LOCK_EX|LOCK_NB)` on `postmaster.pid` before any socket operations. If the lock is held → another instance is running. If the lock is free → the previous instance is dead (kernel released it). This is atomic, crash-safe, and race-free.
-
-**Docker**: Uses a PID file in `/var/run/docker.pid` with process identity verification. Sufficient because Docker runs as root and owns the directory.
-
-#### Required Fix
-
-Implement `flock(LOCK_EX|LOCK_NB)` on a dedicated lock file as the **primary** instance ownership mechanism. The lock must be acquired **before** any socket operations. The lock is held for the daemon's entire lifetime and released automatically by the kernel on any exit (including SIGKILL).
-
-```
-Acquire flock → Create PID file → Clean stale socket → Bind socket → Serve
-```
-
----
+- **Description:** Daemon had no atomic instance ownership, causing TOCTOU races. Fixed by implementing `flock(LOCK_EX|LOCK_NB)` on a lock file.
 
 ### Finding A2: No PID File Management
-
 - **Severity:** High
-- **ADR Violation:** ADR-003 ("PID file as secondary")
-- **Location:** Entire `internal/daemon/` package — no PID file code exists.
+- **Location:** `internal/daemon/`
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-The daemon writes no PID file. The only way to identify the daemon's PID is:
-1. From the terminal output of `devtether up -d` (ephemeral — lost when terminal closes).
-2. From the `/status` IPC endpoint (requires a running daemon — useless for crash recovery).
-3. From `ps aux | grep devtether` (ambiguous — `logs -f` and `routes` also show as `devtether`).
-
-Without a PID file, `devtether down` cannot fall back to `SIGTERM` when the socket is inaccessible (e.g., permission denied from a sudo-started daemon). The `devtether doctor` command cannot report the daemon's PID for manual intervention.
-
-#### Required Fix
-
-Write an atomic PID file (write to temp file, `fsync`, rename) alongside the lock file. The PID file is secondary to flock — it exists for diagnostics and as a `SIGTERM` fallback, not for instance ownership.
-
----
+- **Description:** No PID file existed for diagnostics or SIGTERM fallback. Fixed by writing an atomic PID file alongside the lock file.
 
 ### Finding A3: Insecure Fallback Socket Path (`/tmp/devtether.sock`)
-
 - **Severity:** Critical
-- **ADR Violation:** ADR-003 ("Fallback to `/tmp/devtether-<uid>/`" not `/tmp/devtether.sock`")
-- **Location:** [daemon.go:55](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L55)
+- **Location:** [daemon.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go)
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-When `XDG_RUNTIME_DIR` is unset (containers, minimal Linux, macOS), the socket path falls back to `/tmp/devtether.sock`. This is a world-writable directory with a predictable path. Three confirmed attacks:
-
-**Attack 1 — Fake daemon hijack (Critical):**
-An attacker pre-creates a Unix socket at `/tmp/devtether.sock` and runs a fake HTTP server. When the victim runs `devtether up`, `CheckRunning` dials the attacker's socket, gets a successful connection, and reports `daemon: already running`. All subsequent CLI commands (`status`, `down`, `routes`) are routed to the attacker's fake daemon. The attacker can observe the victim's usage patterns and deny service.
-
-**Attack 2 — Symlink DoS (High):**
-An attacker continuously creates symlinks at `/tmp/devtether.sock` in a loop. Between `os.Remove` and `bind()`, the attacker wins the race and creates a symlink. `bind()` fails with `EADDRINUSE`, preventing the victim from starting DevTether.
-
-**Attack 3 — Multi-user conflict (High):**
-Two different users on the same system both try to use DevTether. The first user's socket (0600) blocks the second user with a confusing `socket permission denied` error.
-
-#### How Mature Tools Solve This
-
-**ssh-agent**: Creates a socket in a `mkdtemp`-generated directory (random name, 0700 permissions). The directory name is unpredictable and only the owner can access it.
-
-**PostgreSQL**: All state files live in a single, user-owned data directory with 0700 permissions.
-
-#### Required Fix
-
-Change the fallback from `/tmp/devtether.sock` to `/tmp/devtether-<uid>/devtether.sock`:
-1. Create `/tmp/devtether-<uid>/` with `0700` permissions.
-2. `Lstat` the directory — verify it is a real directory (not a symlink) and owned by the current UID.
-3. Fail closed on any verification failure.
-
----
+- **Description:** World-writable socket path allowed hijacking and DoS. Fixed by isolating to `/tmp/devtether-<uid>/devtether.sock` with `0700` permissions.
 
 ### Finding A4: No Symlink Protection on Socket Directory
-
 - **Severity:** High
-- **ADR Violation:** ADR-003 ("Symlink protection: O_NOFOLLOW, Lstat"), ADR-009 §3 ("Socket Permission TOCTOU")
-- **Location:** [daemon.go:80-83](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L80-L83) (`os.MkdirAll`)
+- **Location:** [daemon.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go)
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-`Start()` calls `os.MkdirAll(socketDir, 0700)` without verifying the directory's identity. `MkdirAll` follows symlinks. If an attacker pre-creates `$XDG_RUNTIME_DIR/devtether/` as a symlink to an attacker-controlled directory, the socket is created in the attacker's directory, giving the attacker full control of IPC.
-
-#### Confirmed Failure Scenario
-
-1. Attacker creates: `ln -s /tmp/attacker-dir $XDG_RUNTIME_DIR/devtether`
-2. Victim runs `devtether up`.
-3. `os.MkdirAll` sees the target exists and proceeds.
-4. Socket is created at `/tmp/attacker-dir/devtether.sock`.
-5. Attacker controls the socket.
-
-#### Required Fix
-
-After `MkdirAll`, perform:
-1. `os.Lstat(socketDir)` — verify `Mode().IsDir()` (not a symlink).
-2. Verify `stat.Sys().(*syscall.Stat_t).Uid == os.Getuid()`.
-3. Fail closed on any mismatch.
-
----
+- **Description:** `MkdirAll` followed symlinks, risking socket redirection. Fixed by `Lstat` and UID verification.
 
 ### Finding A5: No Daemonize Readiness Verification
-
 - **Severity:** High
-- **Location:** [up.go:328-373](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/up.go#L328-L373) (`daemonize`)
+- **Location:** [up.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/cli/up.go)
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-The `daemonize()` function spawns a child process and exits immediately after printing the PID. There is **no verification** that the child successfully initialized (acquired lock, bound socket, bound ports). The parent cannot report errors to the user.
-
-Consequences:
-- If the child fails (port conflict, config error, lock contention), the error goes to the log file. The user sees only `DevTether daemon started (PID X)` and believes everything is fine.
-- Combined with Finding A1 (no flock), rapid `up -d; up -d` spawns two children with no way to detect the collision.
-- Combined with Finding 21 (silent port fallback), the user never learns what port was bound.
-
-#### How Mature Tools Solve This
-
-**PostgreSQL**: The forking postmaster acquires the flock, writes the PID file, and then signals readiness before the parent exits.
-
-**systemd `Type=notify`**: The child sends `READY=1` via `sd_notify()`. The service manager blocks until readiness is confirmed.
-
-#### Required Fix
-
-The child must signal readiness to the parent (e.g., via a pipe or socket probe). The parent must wait for this signal (with a timeout) before printing success and exiting. If the child fails, the parent must print the error and exit non-zero.
-
----
+- **Description:** Detached child exited immediately without verifying readiness. Fixed via a pipe (child → parent) to signal success or failure.
 
 ### Finding A6: No IPC Request Size Limits
-
 - **Severity:** Medium
-- **ADR Violation:** ADR-003 ("IPC message size limits"), ADR-009 §3 ("Explicit Network Timeouts")
-- **Location:** [daemon.go:120-123](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L120-L123) (`http.Server` config)
+- **Location:** [daemon.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go)
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-The IPC `http.Server` sets `ReadHeaderTimeout: 5*time.Second` but does not set:
-- `MaxHeaderBytes` (default: 1MB)
-- `ReadTimeout` or `WriteTimeout`
-- `http.MaxBytesReader` on any request body
-
-Currently, no handler reads request bodies, so body-based attacks are inert. But when future handlers are added (e.g., `POST /services` for route mutation), unbounded `json.Decoder` would allow memory exhaustion.
-
-The missing `ReadTimeout`/`WriteTimeout` means a slow client can hold a connection open indefinitely after headers are read, exhausting file descriptors.
-
-#### Required Fix
-
-- Set `MaxHeaderBytes: 1 << 16` (64KB — generous for IPC).
-- Set `ReadTimeout: 10 * time.Second` and `WriteTimeout: 10 * time.Second`.
-- Add `http.MaxBytesReader` to any handler that reads a request body.
-
----
+- **Description:** IPC HTTP server lacked body/header limits. Fixed by applying `MaxHeaderBytes` and strict read/write timeouts.
 
 ### Finding A7: Process-Global umask Race
-
-- **Severity:** Medium (reclassified from Low — the current startup order protects against it, but the protection is fragile and undocumented)
-- **Location:** [daemon.go:105-107](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go#L105-L107)
+- **Severity:** Medium
+- **Location:** [daemon.go](file:///media/ivintitus/Data/My%20Projects/Main/DevTether/internal/daemon/daemon.go)
 - **Status:** ✅ Resolved (Subphase 2.7)
-
-#### The Problem
-
-`syscall.Umask(0177)` is process-global. It temporarily restricts the umask for the socket `Listen()` call. If any concurrent goroutine creates a file during this window, that file inherits the restrictive umask.
-
-The current startup order is safe because DNS and proxy `Listen()` are called **before** the errgroup launches `Start()`. But this is an undocumented fragile assumption — any future refactor that moves listener creation into errgroup goroutines would silently introduce a permissions bug.
-
-#### Required Fix
-
-Document the constraint in `daemon.go`. Consider replacing `Umask` with post-creation `os.Chmod(s.socketPath, 0600)` if the startup order ever changes, at the cost of a TOCTOU window on socket permissions (acceptable since the socket directory is already 0700).
+- **Description:** Process-global `syscall.Umask(0177)` caused a race window. Fixed by documenting the constraint as safe given the startup sequence.
 
 ---
 
-## 6. Compliance Matrix
+## 6. Compliance & Architecture Summary
 
-| Standard | Phase 1 | Phase 2 | Architectural |
-|---|---|---|---|
-| ADR-003: Secure by Default | ✓ Pass | ✓ Pass | ✗ **Fail** (A1, A2, A3, A4) |
-| ADR-003: flock ownership | — | — | ✗ **Fail** (A1) |
-| ADR-003: PID file | — | — | ✗ **Fail** (A2) |
-| ADR-003: Symlink protection | — | — | ✗ **Fail** (A3, A4) |
-| ADR-003: IPC message limits | — | — | ✗ **Fail** (A6) |
-| ADR-006: No CGo | ✓ Pass | ✓ Pass | ✓ Pass |
-| ADR-008: Proxy Streaming | ✓ N/A | ✓ N/A | ✓ N/A |
-| ADR-009: Socket TOCTOU | — | — | ✗ **Fail** (A1, A3) |
-| Engineering: Error Handling | ✓ Pass | ✓ Pass | ✓ Pass |
-| Engineering: SoC | ✓ Pass | ✓ Pass | ✓ Pass |
-| Linting (`make test`) | ✓ Pass | ✓ Pass | ✓ Pass |
-
----
-
-## 7. Architectural Recommendation
-
-The findings above require a **single coordinated change** to the daemon lifecycle — not seven independent patches. The recommended implementation sequence is:
-
-```
-1. flock(LOCK_EX|LOCK_NB) on lock file        → Fixes A1 (instance ownership)
-2. Atomic PID file write (temp+fsync+rename)   → Fixes A2 (diagnostics, SIGTERM fallback)
-3. Secure fallback path + Lstat validation     → Fixes A3, A4 (symlink attacks, multi-user)
-4. Readiness pipe (child → parent)             → Fixes A5 (daemonize verification)
-5. IPC server hardening (limits, timeouts)     → Fixes A6 (DoS protection)
-6. Document umask constraint                   → Fixes A7 (fragile assumption)
-```
-
-Steps 1–3 must be implemented atomically in a single commit. They form the **lock → PID → socket** sequence that is the minimum viable secure startup. Steps 4–6 can follow as separate commits.
-
-### Comparative Model
-
-The recommended architecture follows the **PostgreSQL model**:
-
-| Mechanism | PostgreSQL | DevTether (Target) |
-|---|---|---|
-| Primary lock | flock on `postmaster.pid` | flock on `devtether.lock` |
-| Secondary identity | PID in `postmaster.pid` | PID in `devtether.pid` |
-| State directory | Data directory (0700, user-owned) | `$XDG_RUNTIME_DIR/devtether/` or `/tmp/devtether-<uid>/` |
-| Directory validation | Ownership check | Lstat + UID verification |
-| Crash recovery | flock released by kernel → next startup acquires it | Identical |
-| Readiness signal | Postmaster signals readiness | Child signals via pipe |
+- **Compliance:** All architectural findings (A1-A7) initially failed ADR-003 and ADR-009 requirements but are now fully compliant.
+- **Architecture:** The daemon lifecycle now securely follows the PostgreSQL model: acquiring a primary `flock`, writing a secondary PID file, securing the state directory via `Lstat`, and signaling readiness back to the parent.
 
 ---
 
@@ -429,31 +236,87 @@ The recommended architecture follows the **PostgreSQL model**:
 ---
 
 ## 9. Final Phase 2 Post-Implementation Audit
+**Auditor:** `@ivintitus` | **Date:** 09/16/2026
+- **Verdict:** Transition to kernel primitives (`flock`, `os.Pipe`) fully successful, adhering to "No AI Slop".
+- **Findings:** PostgreSQL-style `flock` and PID atomicity confirmed. Connection-held-open proxy shutdown confirmed race-free. `io.EOF` fallback in `up.go` and `flock(LOCK_EX)` context safety in `logs -f` verified. Minor FD leak in `up.go` log file closed in parent. 
 
-**Date:** 09/16/2026
-**Auditor:** `@ivintitus (via Antigravity)`
+---
 
-Following the completion of Subphases 2.6 and 2.7, a final holistic audit was conducted over all Phase 2 changes. 
+## 10. Round 4 Project-Wide QA Audit
+**Auditor:** `@ivintitus` | **Date:** 09/17/2026
+An exhaustive review against `engineering-standards.md` and ADRs.
+- **CLI & Config (R4-1 to R4-5):** `os.Exit(1)` bypasses Cobra; ANSI hardcoding; Naked goroutines lacking `errgroup`; Unsorted map iteration; Deprecated `os.IsNotExist`.
+- **Proxy & Daemon (R4-6 to R4-9):** Missing dialer timeouts; Hardcoded `context.Background()` leaks; Concrete type assertion in proxy breaks streaming; Unrestored `syscall.Umask` race.
+- **DNS & Router (R4-10 to R4-15):** Ghost routes on deletion; Empty domain ingestion; Non-deterministic API outputs; Direct syscall error matching; Silent LAN fallback bypass; ADR-007 sequence violation.
 
-### Scope of Review
-- `internal/cli/` (down.go, logs.go, status.go, doctor.go, root.go, up.go)
-- `internal/daemon/` (client.go, daemon.go, lifecycle.go)
-- `internal/dns/` (server_test.go)
-- Documentation (`docs/architecture.md`, `README.md`)
-- `devtether-audit` and `ponytail` engineering standards
+---
 
-### Verdict
-The Phase 2 implementation successfully resolves all prior structural defects. The transition from polling (`CheckRunning`) to event-driven kernel primitives (`flock`, `os.Pipe`) is fully realized and adheres to the "No AI Slop" and "YAGNI" mandates. The code is minimal, relies strictly on the Go standard library, and introduces no artificial abstractions. 
+## 11. Codex Remediation & Second-Opinion Verification Audit (Subphase 3.3)
+**Auditor:** `@ivin-titus` | **Date:** 09/17/2026
+- **Status:** All 44 findings (26 Master QA + 18 Cline SC) are **implemented and verified** against the shipped codebase (`8e87771`), resolving a previous false claim that 24 were open. Subphase 3.3 is complete.
+- **Key Remediation Applied:**
+  - **Flock/PID (SC-1 to SC-5):** Readiness pipe deadline (5s), `DEVTETHER_FOREGROUND=1` systemd guard, and PID SIGTERM fallback implemented.
+  - **Service Installer (P3-9 to P3-19):** `WorkingDirectory` injected, `ExecStart` quoted safely.
+  - **Resilience (R4-10 to R4-15 / SC-10):** Router normalizes hosts, port-0 fallback removed, API determinism enforced.
+  - **Security (SC-7):** Startup writes a cryptographically random nonce; `/shutdown` demands it.
+  - **Logs (SC-13 to SC-14):** `fsnotify` follow enabled, backwards chunk read limits memory, detached log truncates.
+- **Architectural Exceptions:**
+  - **SC-6/R4-6 (Proxy Timeouts):** Server-side `Read/WriteTimeout` deliberately exempted to protect long-lived streaming (ADR-008).
+  - **SC-11 (Watchdog):** `os.Exit(1)` explicitly authorized for the shutdown watchdog when graceful channels fail.
+  - **SC-15 (Windows):** Service ownership validation build-tag isolated; Windows remains formally unsupported (ADR-006).
 
-### Findings
-1. **Architectural Compliance:** The `flock` and PID-based instance management perfectly aligns with PostgreSQL's proven model. Symlink protection (`validateDirOwnership`) correctly secures the runtime directory.
-2. **Upstream/Downstream Impact:** The shift to connection-held-open shutdown in `/shutdown` cleanly delegates the TCP drain logic to the proxy server without race conditions.
-3. **Edge Cases Handled:** 
-   - `up.go:405` handles `io.EOF` elegantly when the child daemon crashes before binding.
-   - `logs.go:101` safely couples `syscall.Flock(LOCK_EX)` with context cancellation, preventing zombie `devtether logs -f` processes.
-4. **Docs in Sync:** `architecture.md` accurately reflects the new IPC endpoints and lock mechanisms. `discussion_space.md` has absorbed the historical context of `premortem_2.6_2.7.md`.
-5. **Minor Defect (Finding 22):** A minor file descriptor leak exists in `up.go` (`daemonize`). If `child.Start()` succeeds, the log file descriptor `f` is not explicitly closed in the parent before the parent exits. While harmless (the OS closes it instantly upon exit), it violates strict resource hygiene.
+### 11.1 Documentation Drift Repairs Applied
+- `premortem_2.6_2.7.md` deleted; citations repointed to `discussion_space.md`.
+- Exit-code spec reconciled (typed error → `RunE` → exit 1).
+- PID-file story reconciled (fallback wired for SIGTERM).
+- **09/17/2026 (DX-17) Citation Correction:** ADR-009's daemonization mandate (root:root + privilege drop) is **§6**, not §5 (§5 is Web-GUI Origin). Corrected across active plans; immutable audit records remain unedited.
 
-### Action Plan (Subphase 2.8)
-- Close the log file descriptor in `up.go` after successful fork.
-- Mark all Phase 2 tracker items as complete.
+---
+
+## 12. Post-QA Findings (Phase 3 Manual Sandbox)
+
+During the final manual sandbox testing of Phase 3, two critical user-experience edge cases were discovered regarding the daemon's networking and lifecycle resilience.
+
+### Finding QA-1: Orphaned Root Daemon Sockets (False Positive Status)
+- **Status:** 🔴 Open (Pending Future Phase)
+- **Description & Recommendation:** Root daemons leaving socket at `/tmp/devtether-0/devtether.sock` on ungraceful exit causes standard users to get `Permission Denied` on status check (falsely assuming it's running), while `devtether down` returns `ECONNREFUSED` but doesn't unlink it. Must be fixed by using `kill -0` for PID verification, proactively destroying orphaned sockets on `ECONNREFUSED`, and cleaning up in `SIGINT`/`SIGTERM` handlers.
+
+### Finding QA-2: YAGNI TLD Array & Missing Domain Validation
+- **Status:** 🔴 Open (Pending Subphase 3.6)
+- **Description & Recommendation:** `validateRoutes()` currently permits single-label domains (e.g., `abc: 8080`) bypassing TLD matching. The config schema was updated to remove `dns: tld: []` but `validateRoutes()` lacks a fail-fast policy. Must hardcode `.localhost` as the singular enforced TLD and reject domains not ending in `.localhost`. *(Reproduced during Subphase 3.6 manual testing).*
+
+---
+
+## 13. Product-Level Blind-Spot Audit (DX-1 … DX-18)
+
+**Date:** 09/17/2026
+**Auditor:** `@ivin-titus`
+**Scope:** post-Subphase-3.3 tree (`8e87771`, branch `v2.0.0-beta.7`) diffed against `develop`.
+
+This audit covers product-journey reviews (install → init → up → daily use → failure/recovery → service install → uninstall) and traces gaps into code, docs, tests, and DX. 
+
+### Resolved / Implemented Findings
+The following DX findings were verified as **🟢 Resolved** in the current `8e87771` codebase:
+- **DX-3:** `doctor` now validates against the effective configured proxy port (`cfg.Proxy.Port`), not a hardcoded default.
+- **DX-4:** Total DNS failure now prints a summary-level warning and handles the 53→5353 fallback properly.
+- **DX-5:** `devtether logs -f` correctly uses `ErrNoDaemon` to distinguish between a daemon that exited vs no daemon running.
+- **DX-6:** `devtether logs --lines` rejects invalid input (`n < 1`) via a flag boundary validator.
+- **DX-7:** Single-instance-per-user model visibility is improved; `CheckRunning` explicitly recommends recovery commands.
+- **DX-12:** `doctor` missing-config failure now correctly uses the shared `configMissingHint` to suggest `devtether init`.
+- **DX-15:** The "no routes" startup hint correctly points the user to edit the file rather than running `init`.
+
+### Open / Deferred Findings
+The following findings remain **🔴 Open (Pending Subphases 3.4/3.5)**:
+- **DX-2:** Port-fallback messaging still keys on `80` rather than the configured port, falsely attributing `EADDRINUSE` to permissions.
+- **DX-8, DX-14, DX-16, DX-17:** Documentation drift regarding IPC hot-reloads, README snippets, schema TLD rules, and ADR citations.
+- **DX-9, DX-10:** ⚪ Deferred (Service module and related design discussions were moved to `docs/workspace/.ideas/service_mode` to prevent scope creep).
+- **DX-11:** Cross-UID daemon hints exist only in `status` but not `routes` or `up`.
+- **DX-13:** `devtether down` lacks recovery paths for non-permission IPC failures (e.g. nonce mismatch).
+- **DX-18:** Evidence-integrity defect showing Subphase 3.3 completion state inverted. Many tests are missing despite implementation.
+- **DX-19 (Manual Test):** `devtether init` lacks a smart DNS auto-configuration wizard (e.g., detecting `systemd-resolved` or macOS resolver). Currently forces users to follow manual README instructions.
+- **DX-20 (Manual Test):** The Cobra-generated `completion` command appears in `--help` output, adding confusing clutter for typical users.
+- **DX-21 (Manual Test):** `uninstall.sh` successfully removes the binary (which implicitly revokes its `setcap` capability), but will need to be expanded to reverse any automated DNS OS configurations once DX-19 is implemented.
+- **DX-22 (Manual Test):** `devtether --help` and `init --help` manually duplicate Cobra's native auto-generated help structure (listing commands/flags in `Long` descriptions), causing overwhelming double-printing for users.
+
+### Intentionally Removed / Won't Fix
+- **DX-1:** `examples/full-config.yaml` is missing. **Status: ⚪ Resolved (by deletion).** As discussed in `discussion_space.md`, the `examples/` directory was intentionally deleted to reduce maintenance burden and schema drift.

@@ -20,7 +20,7 @@ func NewClient() *Client {
 		httpc: &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					var d net.Dialer
+					d := net.Dialer{Timeout: 2 * time.Second}
 					return d.DialContext(ctx, "unix", SocketPath())
 				},
 			},
@@ -30,8 +30,8 @@ func NewClient() *Client {
 }
 
 // ListRoutes fetches all active routes from the running daemon.
-func (c *Client) ListRoutes() ([]RouteResponse, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://unix/routes", nil)
+func (c *Client) ListRoutes(ctx context.Context) ([]RouteResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/routes", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -54,8 +54,8 @@ func (c *Client) ListRoutes() ([]RouteResponse, error) {
 }
 
 // Status fetches daemon status from the running daemon.
-func (c *Client) Status() (*StatusResponse, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://unix/status", nil)
+func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/status", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -78,10 +78,13 @@ func (c *Client) Status() (*StatusResponse, error) {
 }
 
 // Shutdown requests the daemon to shut down gracefully.
-func (c *Client) Shutdown() error {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://unix/shutdown", nil)
+func (c *Client) Shutdown(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/shutdown", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
+	}
+	if nonce, nonceErr := readNonce(); nonceErr == nil {
+		req.Header.Set("X-Devtether-Nonce", nonce)
 	}
 	resp, err := c.httpc.Do(req)
 	if err != nil {
@@ -103,22 +106,25 @@ func (c *Client) Shutdown() error {
 // the read returns (EOF), the daemon has fully stopped.
 //
 // The caller is responsible for closing resp.Body.
-func (c *Client) ShutdownAndWait() (*http.Response, error) {
+func (c *Client) ShutdownAndWait(ctx context.Context) (*http.Response, error) {
 	// Use a separate client with a longer timeout to accommodate the full
 	// shutdown sequence: IPC shutdown (10s) + proxy drain (5s) + buffer.
 	longClient := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				var d net.Dialer
+				d := net.Dialer{Timeout: 2 * time.Second}
 				return d.DialContext(ctx, "unix", SocketPath())
 			},
 		},
 		Timeout: 20 * time.Second,
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://unix/shutdown", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/shutdown", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if nonce, nonceErr := readNonce(); nonceErr == nil {
+		req.Header.Set("X-Devtether-Nonce", nonce)
 	}
 	resp, err := longClient.Do(req)
 	if err != nil {

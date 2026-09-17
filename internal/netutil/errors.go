@@ -16,7 +16,7 @@ func IsPermissionError(err error) bool {
 	if errors.As(err, &opErr) {
 		var sysErr *os.SyscallError
 		if errors.As(opErr.Err, &sysErr) {
-			return sysErr.Err == syscall.EACCES || sysErr.Err == syscall.EPERM
+			return errors.Is(sysErr.Err, syscall.EACCES) || errors.Is(sysErr.Err, syscall.EPERM)
 		}
 	}
 	return errors.Is(err, os.ErrPermission)
@@ -28,7 +28,7 @@ func IsAddrInUse(err error) bool {
 	if errors.As(err, &opErr) {
 		var sysErr *os.SyscallError
 		if errors.As(opErr.Err, &sysErr) {
-			return sysErr.Err == syscall.EADDRINUSE
+			return errors.Is(sysErr.Err, syscall.EADDRINUSE)
 		}
 	}
 	return false

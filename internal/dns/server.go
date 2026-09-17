@@ -28,7 +28,6 @@ import (
 // for domains registered in the DevTether routing table.
 type Server struct {
 	resolver router.Resolver
-	tlds     []string
 	bind     string
 }
 
@@ -37,7 +36,6 @@ type Server struct {
 func NewServer(cfg config.DNSConfig, resolver router.Resolver) *Server {
 	return &Server{
 		resolver: resolver,
-		tlds:     cfg.TLD,
 		bind:     cfg.Bind,
 	}
 }
@@ -60,21 +58,26 @@ func (s *Server) Listen(ctx context.Context) (net.PacketConn, error) {
 	}
 
 	log := logger.New("dns")
-	log.Debug(fmt.Sprintf("%s unavailable — falling back to 127.0.0.1:5353", s.bind))
+	host, _, splitErr := net.SplitHostPort(s.bind)
+	if splitErr != nil {
+		return nil, fmt.Errorf("dns server has invalid bind address %q: %w", s.bind, splitErr)
+	}
+	fallbackBind := net.JoinHostPort(host, "5353")
+	log.Info(fmt.Sprintf("%s unavailable — falling back to %s", s.bind, fallbackBind))
 	if netutil.IsPermissionError(err) {
 		_, port, _ := net.SplitHostPort(s.bind)
 		if port == "53" {
 			if runtime.GOOS == "linux" {
-				log.Debug("to use port 53, run: sudo setcap cap_net_bind_service=+ep $(which devtether)")
+				log.Info("to use port 53, run: sudo setcap cap_net_bind_service=+ep devtether")
 			} else {
-				log.Debug("to use port 53, run with sudo")
+				log.Info("to use port 53, run with sudo")
 			}
 		} else {
-			log.Debug("to use port 53, run devtether with administrator privileges")
+			log.Info("to use port 53, run devtether with administrator privileges")
 		}
 	}
 
-	s.bind = "127.0.0.1:5353"
+	s.bind = fallbackBind
 	pc, err = lc.ListenPacket(ctx, "udp", s.bind)
 	if err == nil {
 		return pc, nil
@@ -100,7 +103,7 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn) error {
 		_ = server.ShutdownContext(shutdownCtx)
 	}()
 
-	logger.New("dns").Debug(fmt.Sprintf("listening on %s (tlds: %v)", pc.LocalAddr().String(), s.tlds))
+	logger.New("dns").Debug(fmt.Sprintf("listening on %s (tld: localhost)", pc.LocalAddr().String()))
 
 	err := server.ActivateAndServe()
 	if err == nil || isShutdown(shutdownStarted) {
@@ -179,12 +182,7 @@ func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	_ = w.WriteMsg(m)
 }
 
-// matchesTLD checks if the given hostname ends with one of the configured TLDs.
+// matchesTLD checks if the given hostname ends with the hardcoded "localhost" TLD.
 func (s *Server) matchesTLD(name string) bool {
-	for _, tld := range s.tlds {
-		if strings.HasSuffix(name, "."+tld) || name == tld {
-			return true
-		}
-	}
-	return false
+	return strings.HasSuffix(name, ".localhost") || name == "localhost"
 }

@@ -64,7 +64,7 @@ func NewHandler(resolver router.Resolver) *Handler {
 			}
 			// ADR-008: If headers were already sent (mid-stream crash),
 			// abort the TCP connection cleanly — never corrupt the payload.
-			if lrw, ok := w.(*loggingResponseWriter); ok && lrw.HeadersSent() {
+			if lrw, ok := w.(interface{ HeadersSent() bool }); ok && lrw.HeadersSent() {
 				panic(http.ErrAbortHandler)
 			}
 			host, _ := req.Context().Value(hostCtxKey).(string)
@@ -198,4 +198,3 @@ func renderErrorPage(w http.ResponseWriter, statusCode int, data ErrorPageData) 
 		logger.New("proxy").Error("failed to render error page", err)
 	}
 }
-

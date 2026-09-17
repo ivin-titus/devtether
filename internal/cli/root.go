@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ named domains — all from a single Go binary.
   devtether up -d     Start in the background (logs to .logs/)
   devtether up -c     Use a specific config file
   devtether down      Stop the background daemon gracefully
-  devtether status    Show daemon status, uptime, and routes
+  devtether status    Show daemon status (PID, uptime, route count, heap)
   devtether routes    Show active routes
   devtether logs      Show or tail daemon logs
   devtether doctor    Check system environment for common issues
@@ -40,6 +41,9 @@ Documentation: https://github.com/ivin-titus/devtether`,
 	// exit codes without duplicate printing.
 	SilenceErrors: true,
 	SilenceUsage:  true,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		logger.Setup(verbose)
+	},
 }
 
 func init() {

@@ -18,3 +18,4 @@ devtether.yaml
 # OS Specific
 .DS_Store
 .logs/
+.agents/

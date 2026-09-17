@@ -1,4 +1,4 @@
-# ADR 008: Production-Grade Streaming & Context Integrity
+# ADR 008: Proxy Streaming & Context Integrity
 
 ## Status
 Accepted
@@ -13,7 +13,7 @@ Specifically, if a backend streamed a chunked response but crashed mid-stream:
 Additionally, routing logic occurred redundantly. The target was resolved in `ServeHTTP` and again in the `httputil.ReverseProxy.Rewrite` hook, introducing a Time-Of-Check to Time-Of-Use (TOCTOU) risk where a volatile route could disappear between the two steps.
 
 ## Decision
-DevTether must operate as a production-grade reverse proxy capable of seamlessly supporting modern continuous-connection protocols (e.g., Server-Sent Events / SSE, WebSockets, GraphQL subscriptions, and long-polling). To ensure this:
+DevTether must operate as a resilient reverse proxy capable of seamlessly supporting modern continuous-connection protocols (e.g., Server-Sent Events / SSE, WebSockets, GraphQL subscriptions, and long-polling). To ensure this:
 
 1. **State Tracking:** Any HTTP middleware that intercepts or mutates a `http.ResponseWriter` MUST track whether headers have been sent via a `wroteHeader` boolean flag.
 2. **Abort, Don't Corrupt:** If a downstream error is detected *after* headers were already sent to the client, the middleware MUST NOT attempt to write fallback headers or error bodies. The correct action is to `panic(http.ErrAbortHandler)` to cleanly abort the TCP connection without a noisy standard library stack trace.

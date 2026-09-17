@@ -17,7 +17,7 @@ func TestNXDOMAIN(t *testing.T) {
 	engine := router.NewEngine()
 	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
-	srv, addr := startTestServer(t, engine, []string{"localhost"})
+	srv, addr := startTestServer(t, engine)
 	_ = srv
 
 	c := new(mdns.Client)
@@ -83,8 +83,8 @@ func TestDedicatedMux(t *testing.T) {
 	engine2 := router.NewEngine()
 	_ = engine2.AddRoute("app2.localhost", "app2", 3002, router.RouteStatic)
 
-	_, addr1 := startTestServer(t, engine1, []string{"localhost"})
-	_, addr2 := startTestServer(t, engine2, []string{"localhost"})
+	_, addr1 := startTestServer(t, engine1)
+	_, addr2 := startTestServer(t, engine2)
 
 	c := new(mdns.Client)
 	c.Timeout = 2 * time.Second
@@ -131,7 +131,6 @@ func TestConcurrentStartShutdown(t *testing.T) {
 	_ = engine.AddRoute("test.localhost", "test", 8080, router.RouteStatic)
 
 	cfg := config.DNSConfig{
-		TLD:  []string{"localhost"},
 		Bind: "127.0.0.1:0", // Let OS pick port
 	}
 	srv := NewServer(cfg, engine)
@@ -164,11 +163,10 @@ func TestConcurrentStartShutdown(t *testing.T) {
 
 // startTestServer creates and starts a DNS server on a random port.
 // The server is automatically shut down when the test finishes.
-func startTestServer(t *testing.T, engine *router.Engine, tlds []string) (*Server, string) {
+func startTestServer(t *testing.T, engine *router.Engine) (*Server, string) {
 	t.Helper()
 
 	cfg := config.DNSConfig{
-		TLD:  tlds,
 		Bind: "127.0.0.1:0", // Let OS pick port
 	}
 	srv := NewServer(cfg, engine)
@@ -214,7 +212,7 @@ func startTestServer(t *testing.T, engine *router.Engine, tlds []string) (*Serve
 
 // TestMatchesTLD validates the TLD matching logic.
 func TestMatchesTLD(t *testing.T) {
-	srv := &Server{tlds: []string{"localhost", "test"}}
+	srv := &Server{}
 
 	tests := []struct {
 		name  string
@@ -223,7 +221,6 @@ func TestMatchesTLD(t *testing.T) {
 	}{
 		{"subdomain match", "app.localhost", true},
 		{"exact TLD", "localhost", true},
-		{"different TLD", "app.test", true},
 		{"no match", "app.example.com", false},
 		{"partial match", "app.localhostx", false},
 	}
@@ -241,7 +238,7 @@ func TestMatchesTLD(t *testing.T) {
 // TestHandleRequestNonQuery verifies that non-query opcodes get an empty response.
 func TestHandleRequestNonQuery(t *testing.T) {
 	engine := router.NewEngine()
-	_, addr := startTestServer(t, engine, []string{"localhost"})
+	_, addr := startTestServer(t, engine)
 
 	c := new(mdns.Client)
 	c.Timeout = 2 * time.Second
@@ -269,7 +266,7 @@ func TestNonARecordQuery(t *testing.T) {
 	engine := router.NewEngine()
 	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
-	_, addr := startTestServer(t, engine, []string{"localhost"})
+	_, addr := startTestServer(t, engine)
 
 	c := new(mdns.Client)
 	c.Timeout = 2 * time.Second
@@ -297,7 +294,7 @@ func TestCaseSensitivity(t *testing.T) {
 	engine := router.NewEngine()
 	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
-	_, addr := startTestServer(t, engine, []string{"localhost"})
+	_, addr := startTestServer(t, engine)
 
 	c := new(mdns.Client)
 	c.Timeout = 2 * time.Second

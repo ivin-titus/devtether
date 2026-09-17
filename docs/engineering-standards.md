@@ -11,7 +11,7 @@ Read this before writing your first line of code.
 
 ### 1. Match Production-Grade Go Quality
 
-The codebase follows patterns found in production Go infrastructure (Kubernetes,
+The codebase follows patterns found in resilient Go infrastructure (Kubernetes,
 etcd, CoreDNS): clean interfaces, explicit error handling, `errgroup`-based
 lifecycle management, and documented ADRs. New code must match this bar.
 
@@ -150,7 +150,7 @@ impressed by cleverness, but by clarity, correctness, and restraint.
   3. Strip a trailing FQDN dot.
   4. Lowercase.
   - **Any PR that adds a second implementation of this logic is a standards violation.**
-- **Production-Grade Streaming & Context Integrity:** DevTether must operate as a production-grade reverse proxy, supporting modern continuous-connection protocols (SSE, WebSockets, GraphQL subscriptions).
+- **Robust Streaming & Context Integrity:** DevTether must operate as a resilient reverse proxy, supporting modern continuous-connection protocols (SSE, WebSockets, GraphQL subscriptions).
   1. Any HTTP middleware that intercepts a `http.ResponseWriter` must track whether headers have been sent (`wroteHeader bool`). If a downstream error is detected *after* headers were sent, the correct action is `panic(http.ErrAbortHandler)` to cleanly abort the connection — never attempt to write a fallback status or body onto an already-started response.
   2. Resolution logic must only occur once per request; inject the resolved target into `context.Context` in `ServeHTTP` and read it everywhere downstream, including inside `Rewrite`.
 - **No Implicit-Timeout Network Primitives:** Any `http.Client`, `http.Transport`, or `net.Dialer` constructed anywhere in this codebase must set explicit non-zero timeouts (dial, response-header-wait, and TLS handshake where applicable). Never rely on Go's zero-value/infinite defaults.
@@ -294,3 +294,14 @@ unit tests with race detection → cross-compilation check → build.
 4. No unresolved lint warnings
 5. Commit messages follow Conventional Commits format
 6. Documentation updated if CLI flags or behavior changed
+
+---
+
+## Authorized Exemptions & Boundaries
+
+To preserve project velocity and support necessary features, the following specific deviations from the standard rules are authorized:
+
+1. **ADR-008 Streaming Timeout Exemption:** `ReadTimeout` and `WriteTimeout` are explicitly omitted from the Proxy Engine's `http.Server` configuration. This is required to support long-lived HTTP streams (like Server-Sent Events or WebSockets) and large file uploads. To prevent resource exhaustion, `ReadHeaderTimeout` and `IdleTimeout` are strictly enforced instead.
+2. **Watchdog Exit Exemption:** The `os.Exit(1)` call in the CLI shutdown watchdog (`cmd/devtether/main.go` and `internal/cli`) is an authorized exception to the "No `os.Exit` outside `main()`" rule. It acts as a fatal fallback if the graceful shutdown hangs indefinitely.
+3. **`fsnotify` Dependency Rationale:** The `fsnotify` library is an authorized 3rd-party dependency for `internal/cli/logs.go`. Standard library polling is too resource-intensive for log tailing, and `fsnotify` provides efficient, pure-Go, cross-platform event-driven reads.
+4. **Windows Platform Boundary:** DevTether is officially supported on Unix-like environments (Linux, macOS) only. Windows native support is deferred per [ADR-006](adr/006-platform-support-and-cgo-policy.md). WSL2 is required for Windows users.

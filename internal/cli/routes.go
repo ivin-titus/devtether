@@ -21,7 +21,10 @@ var routesCmd = &cobra.Command{
 	Use:   "routes",
 	Short: "Show all configured or active routes",
 	Long: `If the DevTether daemon is running, fetches live routes from it.
-Otherwise, reads routes directly from devtether.yaml.`,
+Otherwise, reads routes directly from devtether.yaml.
+
+Route changes require a daemon restart (devtether down && devtether up);
+live reload via IPC is not available in this release.`,
 	RunE: runRoutes,
 }
 
@@ -30,7 +33,7 @@ func runRoutes(cmd *cobra.Command, args []string) error {
 	if !cmd.Flags().Changed("config") {
 		// Try the daemon first.
 		client := daemon.NewClient()
-		routes, err := client.ListRoutes()
+		routes, err := client.ListRoutes(cmd.Context())
 		if err == nil {
 			sort.Slice(routes, func(i, j int) bool {
 				return routes[i].Domain < routes[j].Domain
@@ -41,7 +44,7 @@ func runRoutes(cmd *cobra.Command, args []string) error {
 
 		// Only fall back to reading config file if daemon is unreachable.
 		if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, os.ErrNotExist) {
-			return err
+			return withRootDaemonHint(err)
 		}
 	}
 

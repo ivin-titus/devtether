@@ -17,11 +17,14 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -93,6 +96,30 @@ func LockPath() string {
 func PIDPath() string {
 	return filepath.Join(runtimeDirPath(), "devtether.pid")
 }
+
+func noncePath() string { return filepath.Join(runtimeDirPath(), "devtether.nonce") }
+
+func writeNonce() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("daemon: generate IPC nonce: %w", err)
+	}
+	nonce := hex.EncodeToString(buf)
+	if err := os.WriteFile(noncePath(), []byte(nonce), 0600); err != nil {
+		return "", fmt.Errorf("daemon: write IPC nonce: %w", err)
+	}
+	return nonce, nil
+}
+
+func readNonce() (string, error) {
+	data, err := os.ReadFile(noncePath())
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func removeNonce() { _ = os.Remove(noncePath()) }
 
 // AcquireLock attempts to acquire an exclusive, non-blocking flock on the
 // lock file. On success, the returned file must be kept open for the daemon's
@@ -175,11 +202,59 @@ func ReadPID() int {
 	if err != nil {
 		return 0
 	}
-	pid, err := strconv.Atoi(string(data[:len(data)-1])) // Strip trailing newline.
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
 		return 0
 	}
 	return pid
+}
+
+// RootDaemonMayBeRunning reports whether a root-owned fallback runtime
+// directory prevents this user from inspecting the root IPC socket.
+func RootDaemonMayBeRunning() bool {
+	if os.Getuid() == 0 {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(os.TempDir(), "devtether-0", "devtether.sock"))
+	return errors.Is(err, os.ErrPermission)
+}
+
+// ErrNoDaemon reports that no daemon lock file exists for this user, so no
+// daemon is running.
+var ErrNoDaemon = errors.New("daemon: no lock file found")
+
+// ErrLockUnreadable reports that the lock file exists but cannot be opened,
+// typically because it belongs to another user's daemon.
+var ErrLockUnreadable = errors.New("daemon: lock file is not readable")
+
+// DaemonRunning probes the lock file for a live daemon without blocking.
+//
+// It returns (false, nil) when no daemon holds the lock, (true, nil) when a
+// daemon does, and a distinguishable error when the lock file cannot be
+// inspected at all (e.g. another user's daemon).
+func DaemonRunning() (bool, error) {
+	lockPath := LockPath()
+
+	//nolint:gosec // Lock file path is derived from the validated runtime directory
+	f, err := os.Open(lockPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("%w: %s", ErrLockUnreadable, lockPath)
+	}
+	defer func() { _ = f.Close() }()
+
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return true, nil
+		}
+		return false, fmt.Errorf("daemon: failed to probe lock %s: %w", lockPath, err)
+	}
+	// Lock acquired → no daemon holds it. Release immediately.
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false, nil
 }
 
 // WaitForExit blocks until the daemon releases its flock (i.e., the daemon
@@ -187,15 +262,19 @@ func ReadPID() int {
 // on flock(LOCK_EX), which returns the instant the daemon's file descriptor
 // is closed (on any exit, including SIGKILL).
 //
-// Returns nil when the daemon exits, or ctx.Err() if the context is cancelled.
+// Returns nil when the daemon exits, ErrNoDaemon when no lock file exists,
+// ErrLockUnreadable when the lock file cannot be opened, or ctx.Err() if the
+// context is cancelled.
 func WaitForExit(ctx context.Context) error {
 	lockPath := LockPath()
 
 	//nolint:gosec // Lock file path is derived from validated runtime directory
 	f, err := os.Open(lockPath)
 	if err != nil {
-		// Lock file doesn't exist → daemon is not running.
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNoDaemon
+		}
+		return fmt.Errorf("%w: %s", ErrLockUnreadable, lockPath)
 	}
 	defer func() { _ = f.Close() }()
 

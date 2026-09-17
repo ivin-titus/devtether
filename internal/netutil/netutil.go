@@ -23,7 +23,6 @@ func NormalizeHost(host string) string {
 		}
 	}
 
-	host = strings.TrimSpace(host)
 	if host == "" {
 		return ""
 	}

@@ -7,9 +7,13 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -65,15 +69,12 @@ type ProxyConfig struct {
 
 // TimeoutConfig defines proxy connection timeouts.
 type TimeoutConfig struct {
-	Read  string `yaml:"read,omitempty"`
-	Write string `yaml:"write,omitempty"`
-	Idle  string `yaml:"idle,omitempty"`
+	Idle string `yaml:"idle,omitempty"`
 }
 
 // DNSConfig defines DNS engine behavior.
 type DNSConfig struct {
-	TLD  []string `yaml:"tld,omitempty"`
-	Bind string   `yaml:"bind,omitempty"`
+	Bind string `yaml:"bind,omitempty"`
 }
 
 // legacyConfig is used solely to detect the old v0 schema and provide
@@ -107,7 +108,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
@@ -148,9 +151,6 @@ func (c *Config) applyDefaults() {
 	if c.DNS.Bind == "" {
 		c.DNS.Bind = DefaultDNSBind
 	}
-	if len(c.DNS.TLD) == 0 {
-		c.DNS.TLD = []string{"localhost"}
-	}
 }
 
 // validate checks all populated sections for correctness.
@@ -172,6 +172,9 @@ func (c *Config) validateRoutes() error {
 	for domain, port := range c.Routes {
 		if domain == "" {
 			return fmt.Errorf("routes: empty domain name is not allowed")
+		}
+		if strings.TrimSpace(domain) != domain {
+			return fmt.Errorf("routes: domain %q must not have surrounding whitespace", domain)
 		}
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("routes: port %d for domain '%s' is out of valid range (1-65535)", port, domain)
@@ -210,14 +213,6 @@ func (c *Config) validateProxy() error {
 
 // validateDNS checks DNS configuration values.
 func (c *Config) validateDNS() error {
-	for _, tld := range c.DNS.TLD {
-		if tld == "" {
-			return fmt.Errorf("dns.tld: empty TLD is not allowed")
-		}
-		if tld == "local" {
-			return fmt.Errorf("dns.tld: 'local' is reserved by mDNS (RFC 6762) and will conflict with Avahi/Bonjour. Use 'localhost' or 'internal' instead")
-		}
-	}
 	return nil
 }
 
