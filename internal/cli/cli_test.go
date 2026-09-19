@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/ivin-titus/devtether/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -63,14 +67,11 @@ func TestNoRoutesHint(t *testing.T) {
 
 func TestDNSUnavailableNotice(t *testing.T) {
 	got := dnsUnavailableNotice()
-	if !strings.Contains(got, "DNS unavailable") {
-		t.Fatalf("expected notice to mention DNS unavailable, got: %s", got)
+	if !strings.Contains(got, "DNS server unavailable") {
+		t.Fatalf("expected notice to mention DNS server unavailable, got: %s", got)
 	}
-	if !strings.Contains(got, "managed") {
-		t.Fatalf("expected notice to mention managed domains, got: %s", got)
-	}
-	if !strings.Contains(got, "Post-Install") {
-		t.Fatalf("expected notice to point at README Post-Install, got: %s", got)
+	if !strings.Contains(got, "modern OSes resolve *.localhost natively") {
+		t.Fatalf("expected notice to mention native resolution, got: %s", got)
 	}
 }
 
@@ -267,18 +268,21 @@ func TestGatherInitAnswersNonInteractive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// In non-interactive mode with no flags, defaults should be false.
-	if answers.daemon {
-		t.Error("expected daemon to be false in non-interactive mode")
+	// Strict typed equality: non-interactive mode with no flags must produce
+	// the exact zero value (except for fallback dnsPort) — no prompt may silently flip any field on.
+	if want := (initAnswers{dnsPort: "5335"}); answers != want {
+		t.Errorf("gatherInitAnswers() = %+v, want %+v", answers, want)
 	}
-	if answers.setcap {
-		t.Error("expected setcap to be false in non-interactive mode")
+	// Non-interactive runs must not emit prompts.
+	if got := w.String(); got != "" {
+		t.Errorf("non-interactive run wrote %q, want no output", got)
 	}
 }
 
 func TestGatherInitAnswersWithFlags(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.Flags().Bool("daemon", false, "")
+	cmd.Flags().Bool("setcap", false, "")
 	_ = cmd.Flags().Set("daemon", "true")
 
 	var w bytes.Buffer
@@ -289,14 +293,278 @@ func TestGatherInitAnswersWithFlags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !answers.daemon {
-		t.Error("expected daemon to be true when --daemon flag is set")
+	// Strict typed equality: only the explicitly set flag may be true.
+	if want := (initAnswers{daemon: true, dnsPort: "5335"}); answers != want {
+		t.Errorf("gatherInitAnswers() = %+v, want %+v", answers, want)
+	}
+}
+
+func TestGatherInitAnswersFlagsNeverTriggerPrompts(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("daemon", false, "")
+	cmd.Flags().Bool("setcap", false, "")
+	_ = cmd.Flags().Set("daemon", "false")
+	_ = cmd.Flags().Set("setcap", "false")
+
+	var w bytes.Buffer
+	answers, err := gatherInitAnswers(cmd, strings.NewReader(""), &w)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if answers != (initAnswers{dnsPort: "5335"}) {
+		t.Errorf("gatherInitAnswers() = %+v, want zero value with fallback port", answers)
+	}
+	if got := w.String(); got != "" {
+		t.Errorf("explicit flags wrote %q, want no prompt output", got)
 	}
 }
 
 func TestIsTTY(t *testing.T) {
-	if isTTY(strings.NewReader("")) {
-		t.Error("isTTY(non-file reader) = true, want false")
+	tests := []struct {
+		name string
+		in   io.Reader
+		want bool
+	}{
+		{name: "nil reader", in: nil, want: false},
+		{name: "string reader", in: strings.NewReader(""), want: false},
+		{name: "bytes buffer", in: &bytes.Buffer{}, want: false},
+		{name: "regular file", in: func() io.Reader { f, _ := os.CreateTemp(t.TempDir(), "tty"); return f }(), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTTY(tt.in); got != tt.want {
+				t.Errorf("isTTY() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectDNSProvider asserts the exact resolver descriptor selected for each
+// platform, so a partial edit (wrong path, missing reload) fails loudly.
+func TestDetectDNSProvider(t *testing.T) {
+	tests := []struct {
+		name   string
+		goos   string
+		paths  []string
+		wantOK bool
+		want   dnsProvider
+	}{
+		{
+			name:   "macOS resolver",
+			goos:   "darwin",
+			wantOK: true,
+			want: dnsProvider{
+				name:    "macOS resolver",
+				dir:     "/etc/resolver",
+				path:    "/etc/resolver/localhost",
+				content: "nameserver 127.0.0.1\nport 5335\n",
+			},
+		},
+		{
+			name:   "systemd-resolved preferred over dnsmasq",
+			goos:   "linux",
+			paths:  []string{"/etc/systemd/resolved.conf", "/etc/dnsmasq.d"},
+			wantOK: true,
+			want: dnsProvider{
+				name:    "systemd-resolved",
+				dir:     "/etc/systemd/resolved.conf.d",
+				path:    "/etc/systemd/resolved.conf.d/devtether.conf",
+				content: "[Resolve]\nDNS=127.0.0.1:5335\nDomains=~localhost\n",
+				reload:  []string{"systemctl", "restart", "systemd-resolved"},
+			},
+		},
+		{
+			name:   "dnsmasq fallback without systemd-resolved",
+			goos:   "linux",
+			paths:  []string{"/etc/dnsmasq.d"},
+			wantOK: true,
+			want: dnsProvider{
+				name:    "dnsmasq",
+				path:    "/etc/dnsmasq.d/devtether.conf",
+				content: "server=/localhost/127.0.0.1#5335\n",
+				reload:  []string{"systemctl", "restart", "dnsmasq"},
+			},
+		},
+		{
+			name:   "linux without a known resolver",
+			goos:   "linux",
+			wantOK: false,
+		},
+		{
+			name:   "unsupported platform",
+			goos:   "windows",
+			wantOK: false,
+		},
+		{
+			name:   "freebsd unsupported even with linux paths",
+			goos:   "freebsd",
+			paths:  []string{"/etc/systemd/resolved.conf", "/etc/dnsmasq.d"},
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Table sanity: an "ok" case must declare a descriptor; a "not ok"
+			// case must expect the zero descriptor.
+			if tt.wantOK != (tt.want.path != "") {
+				t.Fatalf("case %q: wantOK=%v is inconsistent with want=%+v", tt.name, tt.wantOK, tt.want)
+			}
+			if !tt.wantOK && !reflect.DeepEqual(tt.want, dnsProvider{}) {
+				t.Fatalf("case %q: non-ok case must expect the zero descriptor", tt.name)
+			}
+
+			present := make(map[string]bool, len(tt.paths))
+			for _, p := range tt.paths {
+				present[p] = true
+			}
+
+			provider, ok := detectDNSProvider(tt.goos, func(p string) bool { return present[p] }, "5335")
+			if ok != tt.wantOK {
+				t.Fatalf("detectDNSProvider(%s) ok = %v, want %v", tt.goos, ok, tt.wantOK)
+			}
+			if !reflect.DeepEqual(provider, tt.want) {
+				t.Errorf("detectDNSProvider(%s)\n got: %+v\nwant: %+v", tt.goos, provider, tt.want)
+			}
+			// Every descriptor must be actionable: a path and a config body.
+			if ok && (provider.path == "" || provider.content == "") {
+				t.Error("descriptor is missing a path or config body")
+			}
+		})
+	}
+}
+
+// TestCompletionCommandDisabled is a regression test: Cobra's
+// generated `completion` command must not be reachable from the CLI at all.
+func TestCompletionCommandDisabled(t *testing.T) {
+	if !rootCmd.CompletionOptions.DisableDefaultCmd {
+		t.Error("expected rootCmd.CompletionOptions.DisableDefaultCmd to be true")
+	}
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "completion" {
+			t.Fatal("completion command is registered; it must stay hidden from users")
+		}
+	}
+}
+
+// TestInitHelpPrintsFlagsOnce guards the help output fix: Cobra's native flags block
+// is the only place flags may appear for `init`.
+func TestInitHelpPrintsFlagsOnce(t *testing.T) {
+	if strings.Contains(initCmd.Long, "Supported Flags") {
+		t.Error("initCmd.Long still contains the manual 'Supported Flags' block")
+	}
+	for _, flag := range []string{"--daemon", "--force", "--setcap"} {
+		if strings.Contains(initCmd.Long, flag) {
+			t.Errorf("initCmd.Long duplicates flag %q; Cobra already renders it", flag)
+		}
+	}
+
+	usage := initCmd.Flags().FlagUsages()
+	wantSetcap := 0
+	if runtime.GOOS == "linux" {
+		wantSetcap = 1
+	}
+	if got := strings.Count(usage, "--setcap"); got != wantSetcap {
+		t.Errorf("--setcap appears %d times in flag usage, want %d", got, wantSetcap)
+	}
+	if got := strings.Count(usage, "--daemon"); got != 1 {
+		t.Errorf("--daemon appears %d times in flag usage, want 1", got)
+	}
+	if got := strings.Count(usage, "--force"); got != 1 {
+		t.Errorf("--force appears %d times in flag usage, want 1", got)
+	}
+}
+
+// TestRootHelpIsCobraNative asserts the root help output contains no duplicated
+// command cheat-sheet and advertises the real command surface.
+func TestRootHelpIsCobraNative(t *testing.T) {
+	origOut := rootCmd.OutOrStdout()
+	t.Cleanup(func() {
+		rootCmd.SetOut(origOut)
+		rootCmd.SetArgs(nil)
+	})
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"--help"})
+
+	if err := Execute(); err != nil {
+		t.Fatalf("--help returned an error: %v", err)
+	}
+	out := buf.String()
+
+	if strings.Contains(out, "completion") {
+		t.Error("root help advertises the completion command")
+	}
+	if strings.Contains(out, "Start in the background (logs to .logs/)") {
+		t.Error("root help still contains the manual command cheat-sheet")
+	}
+	if !strings.Contains(out, "Available Commands:") {
+		t.Error("root help is missing Cobra's native command list")
+	}
+	// Every user-facing command must be discoverable from the root help.
+	for _, want := range []string{"up", "down", "status", "routes", "logs", "doctor", "init", "version"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("root help does not mention command %q", want)
+		}
+	}
+	// A command that is hidden or has no Short renders blank in help.
+	for _, c := range rootCmd.Commands() {
+		if c.Hidden && c.Name() != "help" {
+			t.Errorf("command %q is hidden and cannot be discovered", c.Name())
+		}
+		if c.Short == "" {
+			t.Errorf("command %q has no Short description for the command list", c.Name())
+		}
+	}
+}
+
+// TestBuildConfigRoundTripsThroughLoader proves the generated init template is
+// always loadable by the schema that produced it (the schema-drift guard).
+func TestBuildConfigRoundTripsThroughLoader(t *testing.T) {
+	tests := []struct {
+		name    string
+		answers initAnswers
+		want    config.SettingsConfig
+	}{
+		{
+			name:    "foreground defaults",
+			answers: initAnswers{dnsPort: "53"},
+			want:    config.SettingsConfig{},
+		},
+		{
+			name:    "daemon enabled",
+			answers: initAnswers{daemon: true, dnsPort: "53"},
+			want:    config.SettingsConfig{Daemon: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "devtether.yaml")
+			//nolint:gosec // Test fixture mirrors the 0644 config convention
+			if err := os.WriteFile(path, []byte(buildConfig(tt.answers)), 0644); err != nil {
+				t.Fatalf("failed to write generated config: %v", err)
+			}
+
+			cfg, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatalf("generated template failed validation: %v", err)
+			}
+			if cfg.Settings != tt.want {
+				t.Errorf("settings = %+v, want %+v", cfg.Settings, tt.want)
+			}
+			if len(cfg.Routes) != 0 {
+				t.Errorf("template registered %d routes, want 0 (all examples are comments)", len(cfg.Routes))
+			}
+			if cfg.Proxy.Port != config.DefaultProxyPort {
+				t.Errorf("proxy port = %d, want default %d", cfg.Proxy.Port, config.DefaultProxyPort)
+			}
+			if cfg.DNS.Bind != config.DefaultDNSBind {
+				t.Errorf("dns bind = %q, want default %q", cfg.DNS.Bind, config.DefaultDNSBind)
+			}
+		})
 	}
 }
 
@@ -318,4 +586,79 @@ func TestVersionCmd(t *testing.T) {
 	if !strings.Contains(output, "v1.2.3") {
 		t.Errorf("expected output to contain 'v1.2.3', got: %s", output)
 	}
+}
+
+// TestLastStartupError is a regression test: when a detached daemon
+// crashes during startup, the parent must surface the child's fatal error
+// (e.g. the ADR-003 symlink refusal) instead of only pointing at the log.
+func TestLastStartupError(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "fatal error line is surfaced without prefix",
+			content: "  Starting...\nError: fatal IPC bind error: daemon: runtime directory /tmp/x is a symlink (possible attack)\n",
+			want:    "fatal IPC bind error: daemon: runtime directory /tmp/x is a symlink (possible attack)",
+		},
+		{
+			name:    "last error line wins",
+			content: "Error: first warning\nError: fatal crash\n",
+			want:    "fatal crash",
+		},
+		{
+			name:    "no error line yields empty",
+			content: "  Starting...\n  Started\n",
+			want:    "",
+		},
+		{
+			name:    "empty log yields empty",
+			content: "",
+			want:    "",
+		},
+		{
+			name:    "bare Error prefix without message yields empty",
+			content: "Error: \n",
+			want:    "",
+		},
+		{
+			// The daemon's progress banner ends with \r, so the fatal error
+			// is concatenated onto the banner line in the log file.
+			name:    "error after carriage-return banner is found",
+			content: "  Starting...\rError: fatal IPC bind error: daemon: runtime directory /x is a symlink (possible attack)\n",
+			want:    "fatal IPC bind error: daemon: runtime directory /x is a symlink (possible attack)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logFile := filepath.Join(t.TempDir(), "devtether.log")
+			//nolint:gosec // Test-controlled path
+			if err := os.WriteFile(logFile, []byte(tt.content), 0600); err != nil {
+				t.Fatalf("failed to write test log: %v", err)
+			}
+			if got := lastStartupError(logFile); got != tt.want {
+				t.Errorf("lastStartupError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("missing log file yields empty", func(t *testing.T) {
+		if got := lastStartupError(filepath.Join(t.TempDir(), "absent.log")); got != "" {
+			t.Errorf("lastStartupError() = %q, want empty", got)
+		}
+	})
+
+	t.Run("only the tail of a large log is read", func(t *testing.T) {
+		logFile := filepath.Join(t.TempDir(), "devtether.log")
+		padding := strings.Repeat("x\n", 5000) // > 4096-byte tail window
+		content := padding + "Error: tail crash\n"
+		//nolint:gosec // Test-controlled path
+		if err := os.WriteFile(logFile, []byte(content), 0600); err != nil {
+			t.Fatalf("failed to write test log: %v", err)
+		}
+		if got := lastStartupError(logFile); got != "tail crash" {
+			t.Errorf("lastStartupError() = %q, want %q", got, "tail crash")
+		}
+	})
 }

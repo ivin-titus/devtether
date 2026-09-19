@@ -90,16 +90,16 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 	checkProxyPort(proxyPort, hasSetcap, &passed, &warnings)
 
-	// Check 4: Port 53 availability.
+	// Check 4: Configured DNS Port availability.
 	if cfg != nil {
 		var lc net.ListenConfig
 		pc, dnsErr := lc.ListenPacket(context.Background(), "udp", cfg.DNS.Bind)
 		if dnsErr == nil {
 			_ = pc.Close()
-			printCheck(true, "Port 53", fmt.Sprintf("available on %s", cfg.DNS.Bind))
+			printCheck(true, "DNS Port", fmt.Sprintf("available on %s", cfg.DNS.Bind))
 			passed++
 		} else {
-			printWarn("Port 53", "unavailable (DevTether will use port 5353 fallback)")
+			printWarn("DNS Port", fmt.Sprintf("unavailable on %s", cfg.DNS.Bind))
 			warnings++
 		}
 

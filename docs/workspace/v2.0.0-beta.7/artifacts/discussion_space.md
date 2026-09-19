@@ -207,4 +207,53 @@ Manual user testing revealed a few DX oversights:
    - Similarly, `initCmd.Long` manually lists its flags, which Cobra then immediately prints again underneath. We must delete the manual flag documentation in `Long`.
 3. **Help Clutter:** Cobra auto-generates a `completion` command that appears in the `devtether --help` output. This is noise for a normal user and must be hidden (`CompletionOptions.DisableDefaultCmd = true`).
 4. **Uninstall Completeness:** `scripts/uninstall.sh` successfully removes the binary. Since `setcap` is an extended file attribute, deleting the binary natively destroys the capability (no explicit reversal is needed). However, once the `init` wizard is upgraded to configure system-level DNS (Point 1), `uninstall.sh` must be expanded to cleanly reverse those DNS integrations.
-5. **Strict TLD Enforcement (QA-2 Verified):** Manual testing with `_devtether.yaml` successfully loaded the `job-flow.internal` route. This actively reproduced the `QA-2` finding (missing `.localhost` enforcement in `validateRoutes`). We must implement a strict `strings.HasSuffix(domain, ".localhost")` check to fail-fast on unsupported domains.
+5. **Strict TLD Enforcement (QA-2 Verified):** Manual testing with `_devtether.yaml` successfully loaded the `job-flow.internal` route. This actively reproduced the `QA-2` finding (missing `.localhost` enforcement in `validateRoutes`). We must implement a strict regex check (`^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.localhost$`) to fail-fast on unsupported domains, block wildcards, and enforce valid alphanumeric characters.
+
+---
+
+## Phase 4.5 Orchestration & CLI Architecture Discussions
+
+We discovered several complex UX/CLI orchestration bugs (DX-23 through DX-30) that require architectural decisions. Let's discuss the proposed solutions:
+
+### 1. Log Tailing Memory Spike (DX-27)
+**The Problem**: Tailing a huge log file backwards via `readBackwardChunk` uses `buf = append(chunk, buf...)`, resulting in an $O(N^2)$ memory leak.
+**Decision (Industry Standard GNU `tail` algorithm)**: We will allocate a single, static 4KB buffer and traverse backwards purely to count newline characters (`\n`). Once we find the target line count, we record the byte offset, use `f.Seek()`, and stream the file directly to standard output. This keeps memory usage at a flat ~4KB ($O(1)$) regardless of the number of lines requested.
+
+### 2. File Descriptor Desync on Log Rotation (DX-28)
+**The Problem**: When `logs -f` is running and the daemon is restarted, `daemonize()` currently truncates the file (`os.O_TRUNC`). The active `logs -f` file descriptor is left pointing beyond the new EOF, causing it to spin infinitely.
+**Decision (Seamless GNU `tail -F` Emulation)**: Before blocking on `fsnotify`, we will compare `f.Stat().Size()` against our current byte offset. If the size shrinks, we immediately know the log was rotated (truncated). We seamlessly `f.Seek(0, io.SeekStart)` and continue tailing, printing a `--- Log Truncated / Daemon Restarted ---` banner.
+
+### 3. `fsnotify` Event Dropping Race Condition (DX-29)
+**The Problem**: In `logs.go`, `fsnotify.Events` are read in a blocking `select` only *after* `f.Read()` returns `EOF`. Events fired *during* the read block are buffered and can be dropped by `fsnotify` if the channel fills up.
+**Decision (Decoupled Producer/Consumer)**: We will spawn a dedicated background goroutine whose *only* job is to instantly drain `watcher.Events` in an infinite loop. It will forward a non-blocking trigger signal to the main file reader. This guarantees `fsnotify` is never blocked by file I/O, entirely eliminating the risk of dropped events or OS-level buffer overflows.
+
+### 4. DNS Wizard Hardcodes Port 53 (DX-30)
+**The Problem**: The `devtether init` wizard hardcodes `:53` into OS configs. If DevTether falls back to `5353` (due to missing `setcap`), resolution breaks.
+**Decision (Dynamic Port Injection)**: The wizard will dynamically calculate if port 53 is inaccessible based on the user's answers (e.g., if they decline `setcap`) and automatically provision the OS configuration with `127.0.0.1:5353` instead, or parse `cfg.DNS.Bind` directly if configuring an existing setup.
+
+---
+
+## Phase 4.6 Architectural Check & Remediation Discussions
+
+The final independent audit discovered four architectural/DX regressions that must be addressed before the release.
+
+### 1. `WaitForExit` Polling Battery Drain (Medium)
+**The Problem**: In `logs.go`, the detached `logs -f` uses a `50ms` loop to poll the internal `flock` lock file to detect when the daemon shuts down. This wakes the CPU 20 times a second, which drains battery and violates our anti-polling standard.
+**Decision (Event-Driven Fallback)**: We should remove the tight `50ms` polling loop.
+*Option A*: Use `fsnotify` to watch the `.pid` or `.lock` file for deletion events.
+*Option B*: Simply back off the polling interval to `1000ms`. Since exiting a log tail isn't latency-critical, a 1-second delay is perfectly acceptable and drops CPU wakes by 95%.
+*Recommendation:* Option B is the "Lazy Senior Dev" approach. No new `fsnotify` watchers needed for a simple exit check.
+
+### 2. Incomplete Fix for DX-30 (High)
+**The Problem**: The `devtether init` wizard configures `systemd-resolved` based on the port active *at that exact moment* (e.g. `53`). But if a user later runs `devtether up` without `setcap`, the proxy dynamically falls back to `5353`, leaving `systemd-resolved` pointing to a dead port. This breaks all `.localhost` routing. Furthermore, the `5353` fallback port is notoriously problematic because it is the standard mDNS port (often blocked by `avahi-daemon` on Linux and `mDNSResponder` on macOS).
+**Decision (Fail-Fast Architecture & Safe Unprivileged Port)**: 
+1. **No Silent Fallbacks:** Remove the silent fallback logic in `internal/dns/server.go`. If `devtether.yaml` configures port 53 and it fails (EACCES or EADDRINUSE), the daemon crashes instantly and cleanly tells the user how to fix it (e.g., use `sudo`, apply `setcap`, or edit the config). This ensures the daemon and the OS config are never out of sync.
+2. **Safe Unprivileged Default:** Update the `init` wizard so that if the user declines `setcap` (or is on an OS without it), it defaults the DNS port to `5335` rather than the conflict-prone `5353`.
+
+### 3. Route Regex Relaxation (Low)
+**The Problem**: The domain validation regex permits trailing hyphens (e.g. `app-.localhost`), violating RFC 1035.
+**Decision**: Tighten the regex in `validateRoutes()` to strictly enforce alphanumeric boundaries for labels: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.localhost$`
+
+### 4. Daemonized Health Check Polling (Low)
+**The Problem**: The `up -d` daemon starts a 1.5-second polling loop that repeatedly `net.Dial`s every backend route forever to check if it's online/offline. This generates unnecessary CPU load and network noise for a detached service.
+**Decision (Deferred)**: Refactoring `devtether routes` to actively ping services on-demand was deemed too risky for the stabilization phase of `beta.7`. This has been deferred to a future release (see `docs/workspace/.ideas/on_demand_health_checks.md`). As an interim mitigation, the polling loop delay was increased from 1.5 seconds to 3.0 seconds to reduce background CPU wakeups.

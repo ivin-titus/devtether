@@ -74,3 +74,27 @@ Cleared out all legacy Phase 1 (beta 3-6) implementation plans, discussion dumps
 **Self-correction disclosed:** the earlier pass reverted the tracker's Subphase 3.3 `[x]` → `[ ]` with the text "Not implemented", on the strength of §13.1. That text is wrong. The box legitimately stays `[ ]` *only* because the subphase's own rule demands a regression test per fix; the status now reads "Implemented in `8e87771`, under-tested — per-item re-verification required", and Part F owns the systematic pass. §13.4's stale "R4-8 confirmed open" line was corrected for the same reason.
 
 **Artifacts changed this session:** `audit_report.md` (§15 header/disposition to DX-18, Root-cause+Direction added to DX-2…DX-15, new DX-16/DX-17/DX-18, §1 severity note, §13.4 corrections), `implementation_plan.md` (ADR-009 §5→§6 and §4/§5→§5 citations, Subphase 3.3 Part 1 Step 0 `Group=`, Subphase 3.4 Parts D/E/F + completion condition), `discussion_space.md` (§5→§6), `tracker.md` (3.3 status corrected; 3.4 description DX-1…DX-18). All within `docs/workspace/`; no source, test, or config file touched. `make test` 8/8, exit 0.
+
+---
+
+### Phase 4.6 - Documentation Sync Candidates (Temporary Stash)
+*Stored here for safekeeping before the full codebase deep audit is complete.*
+
+1. **Init Wizard System Mutations (`internal/cli/init.go`)**: Applies `setcap` and modifies OS resolver (systemd, macOS /etc/resolver) using sudo. 
+   - *Action:* Amend ADR-002/003 instead of creating a new one. (Currently ADR-002 says this is a "manual setup step").
+2. **Static Asset Embedding (`internal/proxy/templates.go`)**: Embeds `error_page.html` and Base64 images via `//go:embed` and `init()` injection.
+   - *Action:* Document that this lightweight approach is mandatory if a GUI ever gets released. No heavy frontend frameworks or Electron. Must be highly secure.
+3. **Proxy Log Throttling & Eviction (`internal/proxy/handler.go`)**: Uses O(1) random map eviction for `throttleCache`.
+   - *Action:* Amend ADR-009 (Proxy Security Lessons) to include this DoS protection mechanism. Also incorporate any relevant notes from `audit_report.md` and `discussion_space.md`.
+4. **CLI TTY & ANSI Color Handling (`internal/cli/tty.go`)**: Pure Go `golang.org/x/term` usage, explicit `NO_COLOR` rules, dropping heavy UI libs.
+   - *Action:* Amend an existing ADR (or create a new one if absolutely necessary).
+5. **Architecture Overview Missing Pieces (`docs/architecture.md`)**:
+   - Add Proxy Layer Security (throttleCache).
+   - Add CLI Daemon Interactivity (logs -f streaming implementation, fsnotify + lock polling).
+   - Expand OS Integration (sudo, port bindings).
+6. **Config Schema Drift (`ADR-005` vs `internal/config`)**: The canonical example in ADR-005 includes `proxy.tls`, `proxy.timeouts.read/write`, and `dns.tld`, which are strictly rejected by the codebase via `decoder.KnownFields(true)`. 
+   - *Action:* Sync the ADR-005 example to precisely match the strict Go struct definitions.
+7. **OS Service Management (`internal/cli/service.go`)**: Systemd and launchd service installation was implemented in Subphase 3.2, but ADR-009 still lists it as a "Future Defense".
+   - *Action:* Update ADR-009 to mark this as implemented, detailing the idempotency and `User=` / `Group=` privilege drop requirements.
+8. **Daemon Liveness Polling (`internal/daemon/lifecycle.go`)**: The daemon uses a non-blocking 500ms `flock` polling loop instead of OS-specific event listeners (inotify/kqueue) to determine liveness.
+   - *Action:* Document this decision in `architecture.md` (or a minor ADR) to highlight our commitment to cross-platform simplicity and zero CGo dependencies.

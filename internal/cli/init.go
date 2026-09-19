@@ -21,7 +21,6 @@ func init() {
 	initCmd.Flags().Bool("daemon", false, "enable background daemon mode in generated config")
 	if runtime.GOOS == "linux" {
 		initCmd.Flags().Bool("setcap", false, "apply setcap for privileged port binding")
-		initCmd.Long += "\n  --setcap    Apply setcap for privileged port binding"
 	}
 }
 
@@ -33,9 +32,9 @@ var initCmd = &cobra.Command{
 In non-interactive environments (piped stdin, CI/CD), all prompts are skipped
 and safe defaults are used unless overridden by flags.
 
-Supported Flags:
-  --daemon    Enable background daemon mode in the generated config
-  --force, -f Overwrite an existing devtether.yaml`,
+On supported systems the wizard can also point your system resolver at
+DevTether so that *.localhost resolves automatically (systemd-resolved or
+dnsmasq on Linux, /etc/resolver on macOS).`,
 	RunE: runInit,
 }
 
@@ -46,7 +45,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	log.Debug("starting initialization wizard", "target", target, "force", force)
 
-	// Idempotency guard (P3-1): keep exit 1 for script safety.
+	// Idempotency guard: keep exit 1 for script safety.
 	if _, err := os.Stat(target); err == nil && !force {
 		log.Debug("config file already exists, aborting")
 		return fmt.Errorf("%s already exists. Skipping initialization. (rerun with --force to overwrite)", target)
@@ -58,7 +57,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Debug("choices gathered", "daemon", answers.daemon, "setcap", answers.setcap)
+	log.Debug("choices gathered", "daemon", answers.daemon, "setcap", answers.setcap, "dns", answers.dns)
 
 	// Generate and write the config file.
 	config := buildConfig(answers)
@@ -88,13 +87,27 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Configure the host resolver if requested.
+	if answers.dns {
+		applied, dnsErr := applyDNSConfig(os.Stderr, answers.dnsPort)
+		switch {
+		case dnsErr != nil:
+			fmt.Fprintf(os.Stderr, "\n⚠ DNS configuration failed: %v\n", dnsErr)
+			fmt.Fprintln(os.Stderr, "  See README: Post-Install Setup to configure it manually.")
+		case applied:
+			fmt.Fprintln(os.Stderr, "\n✓ System DNS configured — *.localhost will resolve to DevTether.")
+		}
+	}
+
 	return nil
 }
 
 // initAnswers holds the collected configuration choices.
 type initAnswers struct {
-	daemon bool
-	setcap bool
+	daemon  bool
+	setcap  bool
+	dns     bool
+	dnsPort string
 }
 
 // gatherInitAnswers resolves configuration choices from flags or interactive
@@ -118,6 +131,17 @@ func gatherInitAnswers(cmd *cobra.Command, stdin io.Reader, w io.Writer) (initAn
 			a.setcap, _ = cmd.Flags().GetBool("setcap")
 		} else if interactive {
 			a.setcap = promptYN(reader, w, "Apply setcap for port 80 binding (requires sudo)?", false)
+		}
+	}
+
+	// The DNS engine defaults to a safe unprivileged port.
+	// We no longer tie the DNS port to setcap, as setcap is exclusively for Port 80.
+	a.dnsPort = "5335"
+
+	// System DNS configuration (interactive only — it is a system-wide change).
+	if interactive {
+		if _, ok := detectDNSProvider(runtime.GOOS, pathExists, a.dnsPort); ok {
+			a.dns = promptYN(reader, w, fmt.Sprintf("Configure system DNS (127.0.0.1:%s) so *.localhost resolves automatically? (requires sudo)", a.dnsPort), false)
 		}
 	}
 
@@ -179,8 +203,7 @@ func buildConfig(a initAnswers) string {
 
 	// DNS resolver.
 	b.WriteString("\n# dns:\n")
-
-	b.WriteString("#   bind: \"127.0.0.1:53\"  # Loopback-only by default; port 53 needs root or setcap\n")
+	b.WriteString("#   bind: \"127.0.0.1:5335\"  # Safe unprivileged default; fully customizable\n")
 
 	return b.String()
 }
@@ -196,11 +219,91 @@ func applySetcap(w io.Writer) error {
 	}
 
 	_, _ = fmt.Fprintf(w, "\nApplying setcap to %s...\n", exe)
+	return runSudo(w, os.Stdin, "setcap", "cap_net_bind_service=+ep", exe)
+}
 
-	//nolint:gosec // Intentional privileged operation requested by the user.
-	cmd := exec.CommandContext(context.Background(), "sudo", "setcap", "cap_net_bind_service=+ep", exe)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = w
+// runSudo executes a privileged command via sudo. stderr stays visible in the
+// wizard output; stdout is discarded so helpers such as tee stay quiet.
+func runSudo(w io.Writer, stdin io.Reader, args ...string) error {
+	//nolint:gosec // Intentional privileged operation explicitly requested by the user.
+	cmd := exec.CommandContext(context.Background(), "sudo", args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = io.Discard
 	cmd.Stderr = w
 	return cmd.Run()
+}
+
+// dnsProvider describes a system resolver that can forward *.localhost to
+// DevTether.
+type dnsProvider struct {
+	name    string   // resolver name shown to the user
+	dir     string   // directory to create first (empty = nothing to create)
+	path    string   // configuration file to write
+	content string   // configuration file contents
+	reload  []string // sudo command that activates the change (empty = not needed)
+}
+
+// detectDNSProvider picks the resolver configuration for the host platform.
+// goos and exists are injected so the mapping stays testable on any machine.
+func detectDNSProvider(goos string, exists func(string) bool, port string) (dnsProvider, bool) {
+	switch goos {
+	case "darwin":
+		return dnsProvider{
+			name:    "macOS resolver",
+			dir:     "/etc/resolver",
+			path:    "/etc/resolver/localhost",
+			content: fmt.Sprintf("nameserver 127.0.0.1\nport %s\n", port),
+		}, true
+	case "linux":
+		if exists("/etc/systemd/resolved.conf") {
+			return dnsProvider{
+				name:    "systemd-resolved",
+				dir:     "/etc/systemd/resolved.conf.d",
+				path:    "/etc/systemd/resolved.conf.d/devtether.conf",
+				content: fmt.Sprintf("[Resolve]\nDNS=127.0.0.1:%s\nDomains=~localhost\n", port),
+				reload:  []string{"systemctl", "restart", "systemd-resolved"},
+			}, true
+		}
+		if exists("/etc/dnsmasq.d") {
+			return dnsProvider{
+				name:    "dnsmasq",
+				path:    "/etc/dnsmasq.d/devtether.conf",
+				content: fmt.Sprintf("server=/localhost/127.0.0.1#%s\n", port),
+				reload:  []string{"systemctl", "restart", "dnsmasq"},
+			}, true
+		}
+	}
+	return dnsProvider{}, false
+}
+
+// pathExists reports whether a path is present on the host filesystem.
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// applyDNSConfig points the host resolver at DevTether. It reports whether a
+// configuration was written; unsupported systems are reported, not failed.
+func applyDNSConfig(w io.Writer, port string) (bool, error) {
+	provider, ok := detectDNSProvider(runtime.GOOS, pathExists, port)
+	if !ok {
+		_, _ = fmt.Fprintln(w, "\n⚠ No supported DNS resolver detected — configure *.localhost manually (see README: Post-Install Setup).")
+		return false, nil
+	}
+
+	_, _ = fmt.Fprintf(w, "\nConfiguring %s for *.localhost...\n", provider.name)
+	if provider.dir != "" {
+		if err := runSudo(w, nil, "mkdir", "-p", provider.dir); err != nil {
+			return false, fmt.Errorf("create %s: %w", provider.dir, err)
+		}
+	}
+	if err := runSudo(w, strings.NewReader(provider.content), "tee", provider.path); err != nil {
+		return false, fmt.Errorf("write %s: %w", provider.path, err)
+	}
+	if len(provider.reload) > 0 {
+		if err := runSudo(w, nil, provider.reload...); err != nil {
+			return false, fmt.Errorf("reload %s: %w", provider.name, err)
+		}
+	}
+	return true, nil
 }

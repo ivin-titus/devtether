@@ -66,6 +66,8 @@ func (s *Server) Listen(ctx context.Context) (net.Listener, string, error) {
 // Serve begins serving on the provided listener.
 // It blocks until the context is cancelled.
 func (s *Server) Serve(ctx context.Context, listener net.Listener, addr string) error {
+	shutdownComplete := make(chan struct{})
+
 	// Graceful shutdown when context is cancelled.
 	//nolint:gosec // Background server goroutine does not need request context
 	go func() {
@@ -75,13 +77,16 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener, addr string) 
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 			logger.New("proxy").Error("shutdown error", err)
 		}
+		close(shutdownComplete)
 	}()
 
 	logger.New("proxy").Debug(fmt.Sprintf("listening on %s", addr))
-	if err := s.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("proxy: server error: %w", err)
+	err := s.httpServer.Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		<-shutdownComplete
+		return nil
 	}
-	return nil
+	return fmt.Errorf("proxy: server error: %w", err)
 }
 
 // bind attempts to bind to the configured port, with automatic fallback.
@@ -101,9 +106,9 @@ func (s *Server) bind(ctx context.Context) (net.Listener, string, error) {
 	s.bindErr = err
 
 	if netutil.IsPermissionError(err) {
-		logger.New("proxy").Info(fmt.Sprintf("permission denied on port %d — falling back to port %d", s.port, s.fallback))
+		logger.New("proxy").Debug(fmt.Sprintf("permission denied on port %d — falling back to port %d", s.port, s.fallback))
 	} else if netutil.IsAddrInUse(err) {
-		logger.New("proxy").Info(fmt.Sprintf("port %d already in use — falling back to port %d", s.port, s.fallback))
+		logger.New("proxy").Debug(fmt.Sprintf("port %d already in use — falling back to port %d", s.port, s.fallback))
 	} else {
 		return nil, "", fmt.Errorf("proxy: failed to bind to port %d: %w", s.port, err)
 	}

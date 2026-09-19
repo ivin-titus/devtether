@@ -95,19 +95,19 @@ DevTether is conceptually built around three independent layers that coexist ins
 ### Layer 1: The Networking Layer
 **The zero-friction entry point.** Handles all traffic, routing, and local network topologies.
 - **Static Routing:** Maps pre-existing services on fixed ports to named `.localhost` domains.
-- **Intelligent IP Cycling:** Dynamically binds to `127.0.0.x` loopback addresses, avoiding port conflicts by actively scanning for `0.0.0.0` bindings (highly optimized O(1) checks).
+- **Fallback Port Binding:** Dynamically falls back to alternate ports (e.g., `8080`) if the default `80` port is occupied, preventing startup failures.
 - **Traffic Inspection:** Buffers network payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays in the GUI.
-- **Smart Project-Boundary CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `web.localhost` to `api.web.localhost`) while blocking cross-project local access to establish a base layer of local security.
+- **Smart Routing-Based CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `web.localhost` to `api.web.localhost`) while safely managing project boundaries.
 - **Rich Error Pages:** Serves ultra-lightweight Cloudflare-style HTML error pages if a backend is down, functioning perfectly even if the GUI process is offline.
 
 ### Layer 2: The Process Orchestrator Layer
-**The Vercel DevTether competitor.** Manages the lifecycle of developer applications (Node, Go, Python).
+**The process orchestration layer.** Manages the lifecycle of developer applications (Node, Go, Python).
 - **Process Groups:** Orchestrates apps into isolated Process Groups (PGIDs) for clean shutdown (`devtether stop <group>`).
 - **Dynamic Ports:** Allocates ephemeral `$PORT` environment variables.
 - **Unified Logging:** Captures stdout/stderr and prefixes them (e.g., `[app | api]`) to clearly separate them from network access logs (`[proxy | web]`).
 
 ### Layer 3: The Access Controls Layer
-**The enterprise signal.** Secures cross-network and cross-org collaboration.
+**The collaboration enabler.** Secures cross-network and cross-org collaboration.
 - **Centralized RBAC & IAM:** A self-hosted identity layer controlling who can access which local services when exposed over LAN (mDNS) or WAN (relay tunnels).
 - **Tokens & Groups:** Ensures that a frontend teammate can access the `api` service, but not the local `admin` database. WAN tunnels force RBAC on by default.
 
@@ -117,7 +117,7 @@ DevTether is conceptually built around three independent layers that coexist ins
 
 | Tool | What it does | Gap we fill |
 |------|-------------|-------------|
-| **Vercel DevTether** | Named `.localhost`, dynamic ports, monorepo support | No static routing. No tunneling. No RBAC. Node.js only. |
+| **Ecosystem Tools (e.g. Portless)** | Named `.localhost`, dynamic ports, monorepo support | No static routing. No tunneling. No RBAC. Node.js only. |
 | **frp** | TCP/UDP reverse proxy and tunneling | Complex config. Not dev-focused. No DNS. |
 | **Ngrok** | Instant public tunnels | SaaS with strict limits. Not self-hosted. |
 | **Caddy / Nginx** | Production reverse proxying | Manual config. No DNS. No process awareness. |
@@ -135,7 +135,7 @@ DevTether is conceptually built around three independent layers that coexist ins
 - Single static binary — zero runtime dependencies (no Node.js, no Python)
 - Excellent networking primitives (`net/http`, `net`, `crypto/tls`)
 - Native concurrency (`goroutines`, `errgroup`)
-- Cross-compilation for Linux, macOS, Windows
+- Currently focusing on UNIX-based systems (Linux, macOS). Native Windows support (without WSL) will be prioritized in future releases.
 
 **Key Dependencies:**
 
@@ -207,17 +207,17 @@ Detailed task breakdowns are tracked per-stage in the project's issue tracker.
 
 | Component | Status |
 |-----------|--------|
-| DNS Engine | ✅ Production-ready (loopback-only, route-aware, port fallback) |
-| Reverse Proxy | ✅ Production-ready (graceful shutdown, timeouts, host validation) |
-| Routing Engine | ✅ Production-ready (thread-safe, hot-reloadable) |
-| Config Loader | ✅ Production-ready (validation, defaults, legacy detection) |
-| IPC Daemon | ✅ Production-ready (XDG socket, 0600 permissions) |
-| CLI (Cobra) | ✅ Production-ready (`up`, `routes` commands) |
-| Layer 1: Core Networking | ✅ Production-ready (Local Static Routing Complete) |
+| DNS Engine | ✅ Implemented (loopback-only, route-aware, port fallback) |
+| Reverse Proxy | ✅ Implemented (graceful shutdown, timeouts, host validation) |
+| Routing Engine | ✅ Implemented (thread-safe, static routing) |
+| Config Loader | ✅ Implemented (validation, defaults, legacy detection) |
+| IPC Daemon | ✅ Implemented (XDG socket, 0600 permissions) |
+| CLI (Cobra) | ✅ Implemented (`up`, `routes` commands) |
+| Layer 1: Core Networking | ✅ Implemented (Local Static Routing Complete) |
 | Layer 2: Orchestration | 🔲 Planned |
 | Layer 3: Access Control (LAN/WAN + RBAC) | 🔲 Planned |
 
-**Legend:** ✅ Production-ready | 🔲 Planned
+**Legend:** ✅ Implemented | 🔲 Planned
 
 ---
 

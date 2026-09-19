@@ -12,18 +12,20 @@ import (
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/spf13/cobra"
 )
-
 // ErrDaemonNotRunning identifies a status request made while no daemon is reachable.
 var ErrDaemonNotRunning = errors.New("DevTether daemon is not running")
 
-// withRootDaemonHint appends the shared cross-UID recovery hint when a
-// root-owned daemon appears to be running but is unreachable from this user.
-// Every command that dials the IPC socket reports the same guidance.
+// withRootDaemonHint appends a recovery hint when an IPC operation fails
+// because the user does not have permissions to access the socket (e.g. they
+// ran the daemon with sudo, but are now checking status as a standard user).
 func withRootDaemonHint(err error) error {
-	if err == nil || !daemon.RootDaemonMayBeRunning() {
-		return err
+	if err == nil {
+		return nil
 	}
-	return fmt.Errorf("%w; a root-owned daemon appears to be running; rerun with sudo", err)
+	if netutil.IsPermissionError(err) {
+		return fmt.Errorf("%w; a root-owned daemon appears to be running in your runtime directory; rerun with sudo", err)
+	}
+	return err
 }
 
 func init() {
@@ -49,10 +51,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	client := daemon.NewClient()
 	status, err := client.Status(cmd.Context())
 	if err != nil {
-		if netutil.IsPermissionError(err) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
-			return withRootDaemonHint(ErrDaemonNotRunning)
+		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
+			// Clean up the socket if it was left behind by an unclean shutdown.
+			daemon.CleanStaleSocket()
+			return ErrDaemonNotRunning
 		}
-		return err
+		return withRootDaemonHint(err)
 	}
 
 	renderStatus(os.Stdout, status)

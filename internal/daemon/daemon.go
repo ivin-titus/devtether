@@ -126,7 +126,22 @@ func (s *Server) Listen(ctx context.Context) (net.Listener, error) {
 
 	// 4. Clean up stale socket from a previous crash.
 	// Under flock protection, this is safe — no other instance can race us.
-	if _, statErr := os.Stat(s.socketPath); statErr == nil {
+	// Lstat (no symlink follow) is required: a *dangling* symlink at the socket
+	// path looks absent to os.Stat, so bind would fail later with a misleading
+	// "address already in use" instead of an explicit refusal (ADR-003).
+	if linfo, statErr := os.Lstat(s.socketPath); statErr == nil {
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			RemovePID()
+			_ = s.lockFile.Close()
+			s.lockFile = nil
+			return nil, fmt.Errorf("daemon: socket path %s is a symlink (possible attack)", s.socketPath)
+		}
+		if linfo.Mode()&os.ModeSocket == 0 {
+			RemovePID()
+			_ = s.lockFile.Close()
+			s.lockFile = nil
+			return nil, fmt.Errorf("daemon: socket path %s exists but is not a unix socket", s.socketPath)
+		}
 		if rmErr := os.Remove(s.socketPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			RemovePID()
 			_ = s.lockFile.Close()
@@ -185,6 +200,13 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			s.lockFile = nil
 		}
 	}()
+	// Unlink the socket while the instance lock is still held, so a concurrent
+	// start cannot bind a fresh socket that this deferred cleanup then removes.
+	if s.socketPath != "" {
+		defer func() { _ = os.Remove(s.socketPath) }()
+	}
+
+	shutdownComplete := make(chan struct{})
 
 	// Graceful shutdown when context is cancelled.
 	//nolint:gosec // Background server goroutine does not need request context
@@ -193,13 +215,16 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = s.httpServer.Shutdown(shutdownCtx)
+		close(shutdownComplete)
 	}()
 
 	logger.New("daemon").Debug(fmt.Sprintf("ipc listening on %s", s.socketPath))
-	if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("daemon: server error: %w", err)
+	err := s.httpServer.Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		<-shutdownComplete
+		return nil
 	}
-	return nil
+	return fmt.Errorf("daemon: server error: %w", err)
 }
 
 // RouteResponse is the JSON representation of a single route.
@@ -274,11 +299,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleShutdown serves the POST /shutdown endpoint.
 //
-// Design: The handler flushes the response immediately, triggers shutdown,
-// then blocks until the server's own shutdown sequence closes this handler's
-// request context. This keeps the HTTP connection alive during the entire
-// graceful shutdown (including the proxy's 5s drain), allowing the client
-// to detect completion via EOF on the response body. No polling needed.
+// Design: The handler flushes the response immediately and triggers shutdown.
+// The HTTP connection closes as soon as this handler returns. The client
+// must then poll the daemon's lockfile to determine when the process has
+// completely exited.
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -299,9 +323,4 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger graceful shutdown of all daemon subsystems.
 	s.cancelFunc()
-
-	// Block until the server's shutdown sequence closes our request context.
-	// This keeps the HTTP connection alive so the client can detect completion
-	// via EOF when the connection closes.
-	<-r.Context().Done()
 }

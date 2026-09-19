@@ -4,6 +4,35 @@ All notable changes to DevTether are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [v2.0.0-beta.7] — 2026-09-20
+
+### Added
+- **Interactive Init Wizard:** Upgraded `devtether init` with a dynamic, OS-aware interactive wizard leveraging `golang.org/x/term` for pure-Go TTY detection.
+- **Smart DNS Configuration:** The init wizard now detects and configures system DNS resolvers (`systemd-resolved`, `dnsmasq`, macOS `/etc/resolver`), gracefully skipping unsupported Linux setups.
+- **Detached Daemon Mode:** Added the `-d`/`--detach` flag and `settings.daemon` configuration to safely background the DevTether process using a child-process fork with `Setsid: true`.
+- **Log Management & Tailing:** Added `devtether logs -f` and `--lines`. Completely rewrote the tailing algorithm to use a fixed buffer (O(1) memory footprint matching GNU `tail`), alongside real-time log truncation polling and a decoupled `fsnotify` event loop.
+- **Configuration Scaffolding:** Added a `settings:` top-level block to `devtether.yaml` for customizing the log path, background daemon behavior, and verbosity.
+- **Active Diagnostics:** Added `devtether doctor` to actively scan for port 80 conflicts, missing Linux `setcap` capabilities, stale UNIX sockets, and DNS resolution integrity.
+- **Lifecycle Commands:** Added `devtether status` to fetch uptime, route count, and heap allocation, alongside `devtether down` for robust IPC daemon termination.
+- **Architectural Documentation:** Created `ADR-011` (Init Wizard & System Mutations) and `ADR-012` (Static Asset `//go:embed` GUI strategy), meticulously syncing the ADR folder with the shipped implementation.
+
+### Changed
+- **Strict Fail-Fast DNS Architecture:** Enforced deterministic `127.0.0.1:5335` unprivileged loopback bindings by default. Port bind failures are now immediately fatal to the process, guaranteeing network determinism.
+- **Configuration Strictness:** Hardened `.localhost` domain validation via strict regex parsing, explicitly rejecting wildcards and unsupported TLD configurations during startup.
+- **UI/UX Consistency:** Cleaned up Cobra CLI help texts by suppressing default `completion` commands, removing duplicated manual lists, and dynamically adjusting `setcap` instructions based on macOS vs. Linux.
+- **Documentation Integrity:** Purged all codebase AI fluff, contradictory comments, ephemeral sprint-tracking tags, and false "Production-ready" claims to respect strict Beta transparency.
+- **Daemon Liveness Polling:** Upgraded `devtether down` to explicitly poll the lockfile via `daemon.WaitForExit()`, ensuring the CLI exactly tracks daemon termination (5ms when idle, up to 5s when proxy is active).
+
+### Removed
+- **Silent DNS Fallback:** Removed the `:0` and `5353` fallback logic in the DNS server to enforce the strict fail-fast architecture.
+- **Static Root Heuristic:** Purged the flawed, static `/tmp/devtether-0` root-daemon detection logic from the `status` command.
+
+### Fixed
+- **Graceful Shutdown Defect (Race Condition):** Fixed a severe concurrency bug where invoking `http.Server.Shutdown()` instantly returned `ErrServerClosed`, prematurely unblocking the parent `errgroup`. Re-engineered the Proxy, DNS, and IPC servers with blocking channels to genuinely honor the 5-second active proxy connection drain.
+- **IPC Deadlock:** Eliminated an artificial infinite HTTP block inside the `POST /shutdown` handler that was forcing the graceful shutdown routine to hit a 10-second timeout every single time.
+- **Foreground Interrupts:** Wrapped foreground `devtether up` boot sequences in `signal.NotifyContext` (`SIGINT` and `SIGTERM`) to guarantee Unix socket and lockfile cleanup upon `Ctrl+C` or System Monitor termination.
+- **Status False Positives:** Implemented dynamic cross-UID detection that strictly surfaces the `sudo` root hint only upon active `EACCES` socket failures.
+
 ## [v2.0.0-beta.6] — 2026-09-12
 
 ### Added
@@ -45,7 +74,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - **Infrastructure:** Introduced a universally compatible standard Unix Makefile for building, testing, and installing (`~/.local/bin/devtether`).
 - **Engineering Standards:** Injected 10 strict architectural rules covering edge normalization, boundary panic recovery, TOCTOU safety, streaming context, fail-fast resources, global mutation in tests, signal handler disarming, ANSI discipline, loopback isolation, and CLI error visibility.
 - **Architectural Decision Records (ADR):** Created `ADR-007` (Defensive Edge Normalization) and `ADR-008` (Production Proxy Streaming). Amended `ADR-002` (DNS Design) and `ADR-003` (Security Model) to strictly enforce dual-stack loopback rules and boundary panic recovery.
-- **Docs Generalization:** Replaced personal domain references with generic, universally understood architectural components (`web.localhost`, `api.localhost`, `db.localhost`) in `README.md` and `PRD.md`. Layer 1 is now marked as fully Solid Enough
+- **Docs Generalization:** Replaced personal domain references with generic, universally understood architectural components (`web.localhost`, `api.localhost`, `db.localhost`) in `README.md` and `PRD.md`. Layer 1 core networking architecture finalized.
 
 ### Fixed
 - **Daemon Lifecycle:** Pre-flight daemon checks now accurately detect permission errors (`EACCES`), protecting active socket lifecycles.
@@ -97,8 +126,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - **Router** exposes `Resolver` interface for clean dependency injection into proxy and DNS.
 
 ### Removed
-- Process supervisor (`internal/process/`) — Engine 2 concern, will return in Phase 2.
-- Port manager (`internal/portman/`) — Engine 2 concern, will return in Phase 2.
+- Process supervisor (`internal/process/`) — Engine 2 concern, deferred to future release.
+- Port manager (`internal/portman/`) — Engine 2 concern, deferred to future release.
 - `devtether add` / `devtether remove` IPC commands — Engine 2 concern.
 - `.local` TLD support — conflicts with mDNS (RFC 6762).
 

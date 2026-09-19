@@ -8,7 +8,7 @@
 //
 // Startup sequence (see ADR-003, ADR-009):
 //
-//	flock(LOCK_EX|LOCK_NB) → atomic PID write → Lstat directory validation → stale socket cleanup → bind
+//	RuntimeDir validation → flock(LOCK_EX|LOCK_NB) → atomic PID write → stale socket cleanup → bind
 //
 // The flock is held for the daemon's entire lifetime. The kernel releases it
 // on any exit (including SIGKILL), providing crash-safe instance ownership
@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // RuntimeDir returns the validated, user-owned directory for daemon state
@@ -33,6 +34,18 @@ import (
 // ownership to prevent symlink attacks (ADR-003).
 func RuntimeDir() (string, error) {
 	dir := runtimeDirPath()
+
+	// ADR-003: verify a pre-existing runtime directory before any filesystem
+	// mutation, so a symlinked path is refused explicitly even when its link
+	// target does not exist (MkdirAll would otherwise fail with a generic
+	// EEXIST first).
+	if info, lerr := os.Lstat(dir); lerr == nil {
+		if err := validateDirInfo(dir, info); err != nil {
+			return "", err
+		}
+	} else if !errors.Is(lerr, os.ErrNotExist) {
+		return "", fmt.Errorf("daemon: failed to stat runtime directory: %w", lerr)
+	}
 
 	// Create the directory if it does not exist.
 	//nolint:gosec // ADR-003: socket directory uses 0700 (owner-only)
@@ -65,7 +78,12 @@ func validateDirOwnership(dir string) error {
 	if err != nil {
 		return fmt.Errorf("daemon: failed to stat runtime directory: %w", err)
 	}
+	return validateDirInfo(dir, info)
+}
 
+// validateDirInfo applies the ADR-003 ownership rules to a pre-fetched Lstat
+// result of dir.
+func validateDirInfo(dir string, info os.FileInfo) error {
 	// Must be a directory, not a symlink.
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("daemon: runtime directory %s is a symlink (possible attack)", dir)
@@ -209,6 +227,31 @@ func ReadPID() int {
 	return pid
 }
 
+// PIDAlive reports whether pid identifies a live process. A permission error
+// counts as alive: the process exists but belongs to another user.
+func PIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// CleanStaleSocket removes an IPC socket and PID file orphaned by a daemon
+// that is no longer running, so `status` and `down` recover on their own.
+// Callers invoke it after a failed connection attempt (refused or missing
+// socket); the PID guard prevents disturbing a live process whose socket
+// briefly refused a connection.
+func CleanStaleSocket() {
+	if PIDAlive(ReadPID()) {
+		return
+	}
+	if _, err := os.Lstat(SocketPath()); err == nil {
+		_ = os.Remove(SocketPath())
+	}
+	RemovePID()
+}
+
 // RootDaemonMayBeRunning reports whether a root-owned fallback runtime
 // directory prevents this user from inspecting the root IPC socket.
 func RootDaemonMayBeRunning() bool {
@@ -257,10 +300,17 @@ func DaemonRunning() (bool, error) {
 	return false, nil
 }
 
+// flockPollInterval bounds how long WaitForExit sleeps between non-blocking
+// lock probes. While an event-driven alternative exists (watching for lock file
+// deletion via fsnotify), we opt for simple polling to avoid the complexity
+// of file system watchers for a non-latency-critical exit check.
+const flockPollInterval = 500 * time.Millisecond
+
 // WaitForExit blocks until the daemon releases its flock (i.e., the daemon
-// process exits). This is event-driven — the goroutine blocks in the kernel
-// on flock(LOCK_EX), which returns the instant the daemon's file descriptor
-// is closed (on any exit, including SIGKILL).
+// process exits). It probes the lock with non-blocking flock calls so context
+// cancellation is honored promptly and no goroutine is left blocked on a
+// descriptor the caller may close. The kernel releases the lock on any daemon
+// exit, including SIGKILL.
 //
 // Returns nil when the daemon exits, ErrNoDaemon when no lock file exists,
 // ErrLockUnreadable when the lock file cannot be opened, or ctx.Err() if the
@@ -278,24 +328,26 @@ func WaitForExit(ctx context.Context) error {
 	}
 	defer func() { _ = f.Close() }()
 
-	// Run the blocking flock in a goroutine so we can respect context cancellation.
-	done := make(chan error, 1)
-	go func() {
-		// LOCK_EX (blocking) — waits until the daemon releases the lock.
-		flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	fd := int(f.Fd())
+	ticker := time.NewTicker(flockPollInterval)
+	defer ticker.Stop()
+
+	for {
+		// LOCK_NB fails immediately while another process holds the lock.
+		flockErr := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
 		if flockErr == nil {
 			// Acquired the lock → daemon is dead. Release immediately.
-			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			_ = syscall.Flock(fd, syscall.LOCK_UN)
+			return nil
 		}
-		done <- flockErr
-	}()
+		if !errors.Is(flockErr, syscall.EWOULDBLOCK) {
+			return flockErr
+		}
 
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		// Close the file to unblock the flock goroutine.
-		_ = f.Close()
-		return ctx.Err()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }

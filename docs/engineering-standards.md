@@ -139,10 +139,10 @@ impressed by cleverness, but by clarity, correctness, and restraint.
   cases, invalid inputs, and concurrency paths are thoroughly covered.
 - **Ephemeral ports for network tests.** Never hardcode ports. Bind to `:0`
   and let the kernel assign an available port. Use `t.Cleanup()` to close
-  listeners. //nolint:gosec // Justification here
+  listeners.
 - **No Unguarded Global State Mutation in Tests:** Tests must not reassign package-level globals (`os.Stdout`, `os.Stderr`, env vars) without an unconditional `defer`-based restore registered *before* the code under test runs, so a panic mid-test can't corrupt global state for every subsequent test in the same process. Prefer passing an `io.Writer` into the code under test over reassigning globals, wherever the code allows it.
 
-## 5. Networking & Boundaries (NEW)
+## 5. Networking & Boundaries
 
 - **Defensive Edge Normalization:** Host/domain normalization MUST live in exactly one function per direction (e.g., `internal/netutil.NormalizeHost`), imported by every producer and every consumer of routing-table keys — not reimplemented per-package. This function must handle, in order:
   1. Strip a `[...]` IPv6 literal only when both the leading `[` and trailing `]` are present (`strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]")`). Never use a blanket character-class `strings.Trim`.
@@ -155,7 +155,7 @@ impressed by cleverness, but by clarity, correctness, and restraint.
   2. Resolution logic must only occur once per request; inject the resolved target into `context.Context` in `ServeHTTP` and read it everywhere downstream, including inside `Rewrite`.
 - **No Implicit-Timeout Network Primitives:** Any `http.Client`, `http.Transport`, or `net.Dialer` constructed anywhere in this codebase must set explicit non-zero timeouts (dial, response-header-wait, and TLS handshake where applicable). Never rely on Go's zero-value/infinite defaults.
 
-## 5. Logging Namespace Boundaries
+## 6. Logging Namespace Boundaries
 
 To maintain strict Separation of Concerns and reduce cognitive overload, all logs must be prefixed with a `[tag]` that maps directly to the isolated engine emitting it:
 
@@ -168,14 +168,14 @@ To maintain strict Separation of Concerns and reduce cognitive overload, all log
 
 Never cross these boundaries (e.g., the `router` package should never emit a `[proxy]` log).
 
-## 6. Test Coverage Strategy (Current State)
+## 7. Test Coverage Strategy
 
 While 100% coverage is the long-term goal, current test coverage prioritizes core business logic (`config`, `dns`, `router`). Some infrastructural packages are currently untested by design, pending architectural refactors:
 
 - **`internal/cli`**: Refactored during the core engine rewrite to use `RunE` and return errors instead of `log.Fatalf`. Now fully ready for comprehensive CLI unit tests.
 - **`internal/proxy`**: Requires setting up mock backend HTTP servers (`httptest.Server`) to assert on headers (like `X-Forwarded-For`). **Strategy:** Add integration-style tests in a future stage.
 - **`internal/daemon`**: Manages OS-level IPC (Unix domain sockets) which introduces cross-platform flakiness. **Strategy:** Isolate platform-specific dialing logic before testing.
-- **`internal/netutil`**: Contains minimal wrapper logic (`errors.As`). Extremely low risk, but should be tested when time permits.
+- **`internal/netutil`**: Contains minimal wrapper logic (`errors.As`). Scheduled for comprehensive test coverage in upcoming cycles.
 
 ---
 

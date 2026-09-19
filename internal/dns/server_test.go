@@ -12,7 +12,7 @@ import (
 )
 
 // TestNXDOMAIN verifies that unregistered domains receive NXDOMAIN (ADR-002).
-// Regression test for bug C2: previously returned NOERROR with empty answers.
+// Regression test: previously returned NOERROR with empty answers.
 func TestNXDOMAIN(t *testing.T) {
 	engine := router.NewEngine()
 	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
@@ -75,7 +75,7 @@ func TestNXDOMAIN(t *testing.T) {
 }
 
 // TestDedicatedMux verifies that Server uses a dedicated ServeMux, not the
-// global DefaultServeMux (bug C3). Two servers must coexist without conflicts.
+// global DefaultServeMux. Two servers must coexist without conflicts.
 func TestDedicatedMux(t *testing.T) {
 	engine1 := router.NewEngine()
 	_ = engine1.AddRoute("app1.localhost", "app1", 3001, router.RouteStatic)
@@ -124,7 +124,7 @@ func TestDedicatedMux(t *testing.T) {
 	}
 }
 
-// TestConcurrentStartShutdown verifies no data race on the server field (bug C1).
+// TestConcurrentStartShutdown verifies no data race on the server field.
 // Run with -race to confirm.
 func TestConcurrentStartShutdown(t *testing.T) {
 	engine := router.NewEngine()

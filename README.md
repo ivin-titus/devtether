@@ -2,123 +2,85 @@
 
 > **Single binary. Named domains. Zero hassle.**
 
-DevTether is a modular, self-hosted developer networking toolkit for Unix environments (Linux, macOS). It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean named domains — all from a single Go binary.
+DevTether is a modular, self-hosted developer networking toolkit for macOS and Linux. It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean, named `.localhost` domains—all from a single, lightweight Go binary.
 
 ```text
 Before:                          After:
-localhost:3222                   web.localhost
-localhost:3223                   api.localhost
-localhost:8042                   db.localhost
+localhost:3222        👉         web.localhost
+localhost:3223        👉         api.localhost
+localhost:8042        👉         db.localhost
 ```
 
 > [!WARNING]
 > **Project Status: Beta**  
-> DevTether is currently in Beta. Engine 1 (Static Routing) is complete - its configuration schema, CLI API, and core architecture are stable. Breaking changes to these will only occur with strong consensus and will be logged in the [CHANGELOG](CHANGELOG.md). Engines 2–4 are pending implementation.
+> DevTether is currently in Beta. Engine 1 (Static Routing) is complete - its configuration schema, CLI API, and core architecture are stable. Breaking changes to these will only occur with strong consensus and will be logged in the [CHANGELOG](CHANGELOG.md).
 
-## Quick Start
+---
+
+## ⚡ Quick Start
 
 ```bash
 # 1. Install (see Installation below)
-# 2. Create a config file
+# 2. Run the interactive setup wizard
 devtether init
 
-# 3. Edit your routes
+# 3. Add your domains to devtether.yaml
 #    routes:
 #      web.localhost: 3222
 #      api.localhost: 8042
 
-# 4. Start routing
-devtether up
+# 4. Start routing!
+devtether up -d
 ```
 
-## Installation
+## 🛠️ Installation
 
 ### Option 1: Quick Install (Recommended)
 
 ```bash
 curl -sSfL https://raw.githubusercontent.com/ivin-titus/devtether/main/scripts/install.sh | sh
 ```
-
 The script auto-detects your OS and architecture, downloads the latest release, and verifies the checksum.
 
 ### Option 2: Download Binary
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/ivin-titus/devtether/releases):
-
-```bash
-# Example for Linux amd64 (replace version with latest)
-tar -xzf devtether_<VERSION>_linux_amd64.tar.gz
-chmod +x devtether
-mkdir -p ~/.local/bin
-mv devtether ~/.local/bin/
-```
+Download the latest release for your platform from [GitHub Releases](https://github.com/ivin-titus/devtether/releases), extract it, and move it to your `$PATH` (e.g., `~/.local/bin/`).
 
 ### Option 3: Build from Source
 
 Requires Go 1.27.1+.
-
 ```bash
 git clone https://github.com/ivin-titus/devtether.git
 cd devtether
-make build
-make install
+make build && make install
 ```
 
-### Post-Install Setup
+---
 
-Depending on your operating system, there are a few final steps to configure DevTether for a seamless experience.
+## 🪄 Post-Install Setup: The Wizard
 
-<details open>
-<summary><b>🐧 Linux Setup</b></summary>
+Configuring your OS to natively resolve `.localhost` domains used to involve tedious, OS-specific manual steps. We fixed that. 
 
-**1. Network Capabilities**
-
-DevTether is secure-by-default and strictly binds to loopback (`127.0.0.1:80` and `127.0.0.1:53`) to prevent accidental LAN exposure. To avoid running as `root` while binding these privileged ports, grant the binary capabilities:
-
+Simply run:
 ```bash
-sudo setcap cap_net_bind_service=+ep ~/.local/bin/devtether
-```
-> *If you skip this, DevTether gracefully falls back to unprivileged ports (8080 for HTTP, 5353 for DNS).*
-
-**2. DNS Configuration**
-
-Configure your system resolver to route `*.localhost` to DevTether.
-
-**systemd-resolved (Ubuntu, Fedora, Arch Linux):**
-```bash
-sudo mkdir -p /etc/systemd/resolved.conf.d/
-echo -e "[Resolve]\nDNS=127.0.0.1:53\nDomains=~localhost" | sudo tee /etc/systemd/resolved.conf.d/devtether.conf
-sudo systemctl restart systemd-resolved
+devtether init
 ```
 
-**dnsmasq (Non-systemd / Alpine):**
-```bash
-echo "server=/localhost/127.0.0.1#53" | sudo tee /etc/dnsmasq.d/devtether.conf
-sudo systemctl restart dnsmasq
-```
-</details>
+The interactive wizard will:
+1. Detect your OS and DNS resolver (e.g., `systemd-resolved` or `dnsmasq` on Linux, `/etc/resolver` on macOS).
+2. Generate a secure `devtether.yaml` configuration.
+3. Explicitly ask for permission to apply OS-level DNS routing and port capabilities (using targeted `sudo` commands).
 
-<details open>
-<summary><b>🍎 macOS Setup</b></summary>
+*(Note: If you run a custom Linux DNS setup without systemd or dnsmasq, the wizard gracefully skips the automatic system mutations and leaves you in full control, while still generating a valid config file! See our [Custom Linux DNS Guide](docs/advanced-port-configuration.md#customizing-the-dns-port) to configure your system manually.)*
 
-**1. Port Binding**
+**Under the Hood:** DevTether uses an embedded DNS server and a reverse proxy. The wizard safely points your OS resolver to DevTether's internal DNS. If you're curious about how this remains secure-by-default, avoids privilege escalation, and binds ports safely, read our deep-dive in [ADR-011: Init Wizard & System Mutations](docs/adr/011-init-wizard-and-system-mutations.md) and the [Architecture Overview](docs/architecture.md).
 
-macOS does not support capabilities like Linux. To use the privileged loopback ports (`127.0.0.1:80` and `127.0.0.1:53`), run `devtether` with `sudo`, or simply let it fall back to the unprivileged ports (`8080` and `5353`).
+---
 
-**2. DNS Configuration**
-
-macOS has native support for domain-specific resolvers via `/etc/resolver/`:
-```bash
-sudo mkdir -p /etc/resolver
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolver/localhost
-```
-</details>
-
-## Usage
+## 💻 Usage
 
 ### Configuration (`devtether.yaml`)
-
-Map your already-running services to clean domains:
+Map your already-running services to clean domains. (The `devtether init` command generates a fully commented reference for you).
 
 ```yaml
 routes:
@@ -126,66 +88,56 @@ routes:
   api.localhost: 3223
   db.localhost: 8042
 ```
+> *Note: Route changes currently require a quick restart (`devtether down && devtether up`).*
+>
+> 💡 **Power User?** If you need to manually customize your proxy or DNS ports after initialization, see the [Advanced Port Configuration Guide](docs/advanced-port-configuration.md).
 
-Run `devtether init` to generate a fully commented configuration reference that covers
-routes, daemon settings, proxy ports/timeouts, and DNS options.
-
-> **Route changes require a daemon restart:** `devtether down && devtether up`.
-> Live reload through the IPC daemon is planned for a future release.
-
-### Commands
+### Core Commands
 
 ```bash
-devtether up                        # Start the routing daemon
+devtether up                        # Start the routing daemon in foreground
 devtether up -d                     # Start in the background (logs to .logs/)
-devtether up -c /path/to/config     # Use a specific config file
 devtether down                      # Stop the background daemon gracefully
 devtether status                    # Show daemon status (PID, uptime, route count, heap)
-devtether routes                    # Show active routes (live from daemon, or from config)
-devtether logs                      # Show or tail daemon logs
+devtether routes                    # Show active routes (live from daemon)
+devtether logs -f                   # Tail the daemon logs
 devtether doctor                    # Check system environment for common issues
-devtether init                      # Create a starter devtether.yaml (Flags: --daemon, --force, Linux-only: --setcap)
-devtether version                   # Print version, commit, and build date
 ```
 
-## Platform Support
+> **Log Management:** If your log file gets too large while running in the background, you can safely clear it without restarting the daemon by running this command in your terminal:
+> ```bash
+> > .logs/devtether.log
+> ```
 
-| Platform | Status |
-|----------|--------|
-| Linux (amd64, arm64) | ✅ Fully supported |
-| macOS (amd64, arm64) | ✅ Supported |
-| Windows | 🔲 Not yet supported ([ADR-006](docs/adr/006-platform-support-and-cgo-policy.md)) |
+---
 
-## Architecture
+## 🗺️ Architecture & Roadmap
 
-DevTether is evolving from a simple reverse proxy into a comprehensive Developer Platform, structured into **Three Main Layers** inside a single Go binary. *(Internally, these layers are powered by **4 independent modular engines** — see [ADR-001](docs/adr/001-modular-engine-architecture.md)).*
+DevTether is evolving from a simple reverse proxy into a comprehensive Developer Platform, structured into **Three Main Layers** inside a single Go binary. *(See [ADR-001](docs/adr/001-modular-engine-architecture.md) for details).*
 
 | Layer | Purpose | Status |
 |-------|---------|--------|
-| **1. Networking Layer** | Reverse Proxy, DNS, Smart CORS, Traffic Inspection, IP Cycling | ✅ Foundation Complete |
-| **2. Process Orchestrator** | Process Groups (PGID), ephemeral ports, unified logging | 🔲 Planned |
+| **1. Networking Layer** | Reverse Proxy, DNS, Smart CORS, Traffic Inspection | ✅ Beta Complete |
+| **2. Process Orchestrator** | Process Groups, ephemeral ports, unified logging | 🔲 Planned |
 | **3. Access Controls** | Centralized IAM, RBAC, cross-network collaboration tokens | 🔲 Planned |
 
-DevTether provides a **Unified Interface**: both the CLI and the stateless, lazy-loaded Web GUI (`devtether.localhost`) communicate via the exact same internal IPC Daemon API. What you can do in the GUI, you can do in the CLI.
+**Platform Support:** Fully supported on macOS and Linux (amd64, arm64). Windows is not currently supported ([ADR-006](docs/adr/006-platform-support-and-cgo-policy.md)).
 
-*For detailed architecture, sequence diagrams, and the request flow, see [docs/architecture.md](docs/architecture.md).*
+---
 
-## Documentation
+## 📚 Documentation
 
-- [Architecture Overview](docs/architecture.md) — Deep dive into engines, request flows, and infrastructure
-- [Product Requirements](docs/PRD.md) — Goals, competitive landscape, and implementation roadmap
-- [Architectural Decision Records](docs/adr/README.md) — Why things are built the way they are
+- [Architecture Overview](docs/architecture.md) — Deep dive into engines, request flows, and infrastructure.
+- [Advanced Port Configuration](docs/advanced-port-configuration.md) — How to manually adjust and decouple DNS/Proxy ports.
+- [Product Requirements](docs/PRD.md) — Goals, competitive landscape, and implementation roadmap.
+- [Architectural Decision Records](docs/adr/README.md) — The *"why"* behind our technical choices.
 
-## Contributing
+## 🤝 Contributing
 
 We welcome contributions! Before submitting a PR:
+1. Read our [Engineering Standards](docs/engineering-standards.md) (the code quality bar).
+2. Follow the [Contributing Guide](CONTRIBUTING.md).
+3. Run `make test` locally to ensure CI will pass.
 
-1. Read our [Engineering Standards](docs/engineering-standards.md) — the code quality bar for all contributions
-2. Follow the [Contributing Guide](CONTRIBUTING.md) — setup, workflow, and PR checklist
-3. Run `./scripts/test.sh` before pushing — if it passes locally, CI will pass
-
-See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community behavior policies.
-
-## License
-
-DevTether is licensed under the AGPL-3.0 License. See [LICENSE](LICENSE) for the full text.
+## 📄 License
+DevTether is licensed under the AGPL-3.0 License. See [LICENSE](LICENSE).

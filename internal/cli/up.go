@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -70,6 +71,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	if !cmd.Flags().Changed("verbose") && cfg.Settings.Verbose {
 		verbose = true
 	}
+	logger.Setup(verbose)
 
 	// 1.6. Daemonize if requested via -d flag or settings.daemon config.
 	detach, _ := cmd.Flags().GetBool("detach")
@@ -108,7 +110,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	}
 
 	// 4. Set up context with signal cancellation.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// 4.5. Pre-flight check: ensure another daemon instance is not already running.
@@ -140,25 +142,18 @@ func runUp(cmd *cobra.Command, args []string) error {
 	dnsAddr := ""
 	dnsConn, err := dnsServer.Listen(ctx)
 	if err != nil {
-		dnsLog := logger.New("dns")
-		dnsLog.Debug("failed to bind", "error", err)
-		dnsLog.Debug("the proxy will still work — configure DNS manually or use /etc/hosts")
-	} else {
-		dnsAddr = dnsConn.LocalAddr().String()
+		return fmt.Errorf("fatal dns bind error: %w", err)
 	}
+	dnsAddr = dnsConn.LocalAddr().String()
 
 	proxyListener, proxyAddr, err := proxyServer.Listen(ctx)
 	if err != nil {
-		if dnsConn != nil {
-			_ = dnsConn.Close()
-		}
+		_ = dnsConn.Close()
 		return fmt.Errorf("fatal proxy bind error: %w", err)
 	}
 	ipcListener, err := ipcDaemon.Listen(ctx)
 	if err != nil {
-		if dnsConn != nil {
-			_ = dnsConn.Close()
-		}
+		_ = dnsConn.Close()
 		_ = proxyListener.Close()
 		return fmt.Errorf("fatal IPC bind error: %w", err)
 	}
@@ -175,12 +170,10 @@ func runUp(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	// DNS engine (Serving on bound packet connection) — non-fatal.
-	if dnsConn != nil {
-		runWorker(func() error {
-			return dnsServer.Serve(gCtx, dnsConn)
-		})
-	}
+	// DNS engine (Serving on bound packet connection).
+	runWorker(func() error {
+		return dnsServer.Serve(gCtx, dnsConn)
+	})
 
 	// IPC daemon.
 	runWorker(func() error {
@@ -288,7 +281,7 @@ func noRoutesHint(path string) string {
 
 // dnsUnavailableNotice explains the consequence of a total DNS bind failure.
 func dnsUnavailableNotice() string {
-	return "DNS unavailable — managed *.localhost domains will not resolve. See README: Post-Install Setup."
+	return "Internal DNS server unavailable (usually fine, modern OSes resolve *.localhost natively)."
 }
 
 // Stable reasons the proxy may fall back from its configured port.
@@ -427,7 +420,8 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, info startupIn
 
 	return func() error {
 		// Initial check runs immediately
-		ticker := time.NewTicker(1500 * time.Millisecond)
+		// Deferred feature: Replace with on-demand pinging via `devtether routes`
+		ticker := time.NewTicker(3000 * time.Millisecond)
 		defer ticker.Stop()
 		routeLog := logger.New("route")
 
@@ -505,9 +499,8 @@ func daemonize(cfg *config.Config) error {
 
 	logFile := filepath.Join(logDir, "devtether.log")
 	//nolint:gosec // Log files use 0644 — readable by owner and group for debugging
-	// Start each detached daemon with a bounded log lifetime. A fresh run owns a
-	// fresh log rather than retaining unbounded output from previous runs.
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// Start each detached daemon using O_APPEND to retain logs across restarts.
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file %s: %w", logFile, err)
 	}
@@ -561,6 +554,9 @@ func daemonize(cfg *config.Config) error {
 			return fmt.Errorf("daemon startup timed out — child was terminated; check logs at %s", logFile)
 		}
 		if errors.Is(readErr, io.EOF) {
+			if cause := lastStartupError(logFile); cause != "" {
+				return fmt.Errorf("daemon crashed during startup: %s (full log: %s)", cause, logFile)
+			}
 			return fmt.Errorf("daemon crashed during startup — check logs at %s", logFile)
 		}
 		return fmt.Errorf("readiness check failed: %w", readErr)
@@ -576,4 +572,40 @@ func daemonize(cfg *config.Config) error {
 	fmt.Printf("DevTether daemon started (PID %d)\n", child.Process.Pid)
 	fmt.Printf("Logs: %s\n", logFile)
 	return nil
+}
+
+// lastStartupError returns the child's fatal error line from the end of the
+// daemon log, without its "Error: " prefix, so a detached startup failure is
+// reported to the user instead of only pointing at the log file. It is
+// best-effort: any read problem or a log without an error line yields "".
+func lastStartupError(logFile string) string {
+	f, err := os.Open(logFile) //nolint:gosec // Log file path is resolved from config
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	const tail int64 = 4096
+	start := info.Size() - tail
+	if start < 0 {
+		start = 0
+	}
+	buf := make([]byte, info.Size()-start)
+	if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	cause := ""
+	// The child's progress banner uses \r, so the fatal error line may not
+	// start at a \n boundary — normalize before splitting into lines.
+	normalized := strings.ReplaceAll(string(buf), "\r", "\n")
+	for _, line := range strings.Split(normalized, "\n") {
+		if msg, ok := strings.CutPrefix(line, "Error: "); ok && msg != "" {
+			cause = msg // the fatal error is the last thing the child wrote
+		}
+	}
+	return cause
 }

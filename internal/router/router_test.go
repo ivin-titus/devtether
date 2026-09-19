@@ -114,7 +114,7 @@ func TestEngine_Concurrency(t *testing.T) {
 
 	<-done
 	<-done
-	// If it didn't panic with concurrent map access, test passed.
+	// Test passes if no race condition or panic occurs during concurrent access.
 }
 
 // Verify Engine satisfies the Resolver interface at compile time.

@@ -21,17 +21,6 @@ var rootCmd = &cobra.Command{
 port memorization, reverse proxy configs, and ngrok subscriptions with clean
 named domains — all from a single Go binary.
 
-  devtether up        Start the routing daemon
-  devtether up -d     Start in the background (logs to .logs/)
-  devtether up -c     Use a specific config file
-  devtether down      Stop the background daemon gracefully
-  devtether status    Show daemon status (PID, uptime, route count, heap)
-  devtether routes    Show active routes
-  devtether logs      Show or tail daemon logs
-  devtether doctor    Check system environment for common issues
-  devtether init      Create a starter devtether.yaml
-  devtether version   Print version information
-
 Documentation: https://github.com/ivin-titus/devtether`,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = cmd.Help()
@@ -47,6 +36,10 @@ Documentation: https://github.com/ivin-titus/devtether`,
 }
 
 func init() {
+	// Shell-completion plumbing is noise for a single-binary CLI; Cobra's
+	// generated `completion` command is therefore not registered at all.
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
+
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "devtether.yaml",
 		"path to devtether.yaml config file")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,

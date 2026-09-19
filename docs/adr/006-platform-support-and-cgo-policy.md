@@ -40,6 +40,7 @@ If a feature requires functionality typically provided by a C library, a pure-Go
 | SQLite | `mattn/go-sqlite3` | `modernc.org/sqlite` or `go.etcd.io/bbolt` |
 | mDNS | System `avahi`/`dns-sd` | `hashicorp/mdns` |
 | TLS/ACME | — | `golang.org/x/crypto/acme` (already pure Go) |
+| CLI TTY / Colors | `fatih/color` (Heavy/OS-bound) | `golang.org/x/term` (Standard lib) |
 
 ### 3. Windows Roadmap (Future)
 

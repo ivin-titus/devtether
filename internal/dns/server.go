@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -40,49 +39,14 @@ func NewServer(cfg config.DNSConfig, resolver router.Resolver) *Server {
 	}
 }
 
-// Listen binds the DNS server to the configured port (with fallback) and returns the packet connection.
-// Port resolution order:
-//  1. Configured bind address (default: 127.0.0.1:53)
-//  2. If EACCES/EADDRINUSE → 127.0.0.1:5353
-//  3. If 5353 also fails → returns error
+// Listen binds the DNS server to the configured port and returns the packet connection.
 func (s *Server) Listen(ctx context.Context) (net.PacketConn, error) {
 	var lc net.ListenConfig
 	pc, err := lc.ListenPacket(ctx, "udp", s.bind)
-	if err == nil {
-		return pc, nil
-	}
-
-	// Fall back to 5353 on permission denied or address in use.
-	if !netutil.IsRecoverable(err) {
+	if err != nil {
 		return nil, fmt.Errorf("dns server failed: %w", err)
 	}
-
-	log := logger.New("dns")
-	host, _, splitErr := net.SplitHostPort(s.bind)
-	if splitErr != nil {
-		return nil, fmt.Errorf("dns server has invalid bind address %q: %w", s.bind, splitErr)
-	}
-	fallbackBind := net.JoinHostPort(host, "5353")
-	log.Info(fmt.Sprintf("%s unavailable — falling back to %s", s.bind, fallbackBind))
-	if netutil.IsPermissionError(err) {
-		_, port, _ := net.SplitHostPort(s.bind)
-		if port == "53" {
-			if runtime.GOOS == "linux" {
-				log.Info("to use port 53, run: sudo setcap cap_net_bind_service=+ep devtether")
-			} else {
-				log.Info("to use port 53, run with sudo")
-			}
-		} else {
-			log.Info("to use port 53, run devtether with administrator privileges")
-		}
-	}
-
-	s.bind = fallbackBind
-	pc, err = lc.ListenPacket(ctx, "udp", s.bind)
-	if err == nil {
-		return pc, nil
-	}
-	return nil, fmt.Errorf("dns server failed on fallback port: %w", err)
+	return pc, nil
 }
 
 // Serve begins handling DNS queries on the provided PacketConn.
@@ -94,6 +58,8 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn) error {
 	server := &dns.Server{PacketConn: pc, Handler: mux}
 	shutdownStarted := make(chan struct{})
 
+	shutdownComplete := make(chan struct{})
+
 	//nolint:gosec // Shutdown requires a fresh, uncancelled context.
 	go func() {
 		<-ctx.Done()
@@ -101,29 +67,22 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = server.ShutdownContext(shutdownCtx)
+		close(shutdownComplete)
 	}()
 
 	logger.New("dns").Debug(fmt.Sprintf("listening on %s (tld: localhost)", pc.LocalAddr().String()))
 
 	err := server.ActivateAndServe()
-	if err == nil || isShutdown(shutdownStarted) {
+	if err == nil {
+		<-shutdownComplete
 		return nil
 	}
 	return err
 }
 
-// isShutdown checks if the shutdown channel has been closed (non-blocking).
-func isShutdown(ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
-}
 
 // handleRequest processes incoming DNS queries. Only A record queries
-// for domains registered in the routing table under a configured TLD
+// for domains registered in the routing table under the .localhost TLD
 // receive a response. All other queries receive NXDOMAIN (per ADR-002).
 func (s *Server) handleRequest(w dns.ResponseWriter, r *dns.Msg) {
 	defer func() {

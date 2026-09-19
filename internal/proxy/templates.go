@@ -13,9 +13,9 @@ var errorPageHTML string
 //go:embed logo.png
 var logoBytes []byte
 
-// errorPageTemplate is strictly parsed using html/template to natively
-// contextualize and escape all variables (Host, Target). This completely
-// mitigates Reflected XSS vulnerabilities if a malicious Host header is passed.
+// errorPageTemplate is parsed using html/template to natively
+// contextualize and escape all template variables. This mitigates
+// Reflected XSS vulnerabilities if malicious input is passed.
 var errorPageTemplate *template.Template
 
 func init() {

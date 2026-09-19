@@ -28,7 +28,7 @@ Adopt a **"Secure by Default, Permissive by Opt-in"** security model:
 |----------|-----------|
 | IPC socket permissions: `0600` | Only the owner can read/write. Prevents local privilege escalation. |
 | Socket location: `$XDG_RUNTIME_DIR/devtether/` | Per-user, `0700`, tmpfs-backed. Cleaner than `/tmp`. |
-| DNS default bind: `127.0.0.1:53` | Loopback-only. `0.0.0.0` requires `--lan` flag. |
+| DNS default bind: `127.0.0.1:5335` | Loopback-only unprivileged default. `0.0.0.0` requires `--lan` flag. |
 | Proxy targets: loopback-only | Routes can only point to `127.0.0.1:<port>`. Prevents SSRF to internal network. |
 | Orchestrator commands: YAML-only by default | Ad-hoc commands via IPC require `--allow-arbitrary` flag. |
 | Child process environment: allowlisted | Only `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TERM`, `PORT` + explicit `env:` config. |

@@ -87,7 +87,7 @@ The post-implementation audit identified 4 architectural flaws that must be reso
     - *Risk:* If the user runs `go run main.go init --setcap`, setcap is applied to the temporary go-build binary, silently vanishing later.
     - *Resolution:* Warn if `os.Executable()` is inside `/tmp` or `go-build`.
 18. **Systemd Path Whitespace Parsing Failure (P3-17):**
-    - *Risk:* The generated `ExecStart` line in systemd is unquoted. Because the config file path is `/media/ivintitus/Data/My Projects/Main/DevTether/devtether.yaml`, systemd will split on the space and crash immediately.
+    - *Risk:* The generated `ExecStart` line in systemd is unquoted. Because the config file path might contain spaces (e.g., `/path/with spaces/devtether.yaml`), systemd will split on the space and crash immediately.
     - *Resolution:* Wrap paths in quotes in `systemdTemplate`: `ExecStart="{{.BinaryPath}}" up --config "{{.ConfigPath}}"`
 19. **Privilege Inversion on User Services (P3-18):**
     - *Risk:* Running `sudo devtether service install --user` resolves `$HOME` to `/root` but executes `systemctl --user enable` as root, which crashes due to a missing D-Bus session.

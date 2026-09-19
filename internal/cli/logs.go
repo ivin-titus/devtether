@@ -75,8 +75,8 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	if followLogs {
 		// Follow mode: print the backlog, then only keep watching if a daemon
 		// is actually running for this user.
-		if _, copyErr := io.Copy(os.Stdout, f); copyErr != nil {
-			return fmt.Errorf("failed to read log file: %w", copyErr)
+		if err := printLastLines(f, logLines); err != nil {
+			return fmt.Errorf("failed to read log file: %w", err)
 		}
 		running, probeErr := daemon.DaemonRunning()
 		if probeErr != nil {
@@ -90,43 +90,65 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show last N lines.
-	content, err := readLastLines(f, logLines)
-	if err != nil {
+	if err := printLastLines(f, logLines); err != nil {
 		return fmt.Errorf("failed to read log file: %w", err)
 	}
-
-	lines := splitTail(content, logLines)
-	_, _ = os.Stdout.Write(lines)
 	return nil
 }
 
-func readLastLines(f *os.File, n int) ([]byte, error) {
+// printLastLines traverses backwards to find the Nth newline and prints the rest.
+func printLastLines(f *os.File, n int) error {
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	const chunkSize int64 = 4096
 	end := info.Size()
-	buf := make([]byte, 0, chunkSize)
+	if end == 0 {
+		return nil
+	}
+
+	const chunkSize int64 = 4096
+	buf := make([]byte, chunkSize)
 	newlines := 0
-	for end > 0 && newlines <= n {
+	targetOffset := int64(0)
+
+	for end > 0 {
 		start := end - chunkSize
 		if start < 0 {
 			start = 0
 		}
-		chunk := make([]byte, end-start)
-		if _, err := f.ReadAt(chunk, start); err != nil && !errors.Is(err, io.EOF) {
-			return nil, err
+		readSize := end - start
+		var readErr error
+		if _, readErr = f.ReadAt(buf[:readSize], start); readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
 		}
-		buf = append(chunk, buf...)
-		for _, b := range chunk {
-			if b == '\n' {
+
+		// Count newlines backwards
+		for i := int(readSize) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				// Skip the very last newline if the file ends with one
+				if end == info.Size() && i == int(readSize)-1 {
+					continue
+				}
 				newlines++
+				if newlines == n {
+					targetOffset = start + int64(i) + 1
+					break
+				}
 			}
+		}
+
+		if newlines == n {
+			break
 		}
 		end = start
 	}
-	return splitTail(buf, n), nil
+
+	if _, err = f.Seek(targetOffset, io.SeekStart); err != nil {
+		return err
+	}
+	_, err = io.Copy(os.Stdout, f)
+	return err
 }
 
 // resolveLogFile determines the log file path from config or default.
@@ -144,8 +166,7 @@ func resolveLogFile() (string, error) {
 }
 
 // tailFollow continuously reads new data from the file and prints it.
-// It exits cleanly when the daemon shuts down, detected via a blocking
-// flock on the daemon's lock file (event-driven, no polling).
+// It exits cleanly when the daemon shuts down, detected by polling the lock file.
 func tailFollow(ctx context.Context, f *os.File) error {
 	// Create a cancellable context for the tail loop.
 	tailCtx, cancel := context.WithCancel(ctx)
@@ -180,6 +201,25 @@ func tailFollow(ctx context.Context, f *os.File) error {
 			return waitErr
 		}
 	})
+	trigger := make(chan struct{}, 1)
+	g.Go(func() error {
+		for {
+			select {
+			case <-gCtx.Done():
+				return nil
+			case eventErr := <-watcher.Errors:
+				if eventErr != nil {
+					return fmt.Errorf("watch log file: %w", eventErr)
+				}
+			case <-watcher.Events:
+				select {
+				case trigger <- struct{}{}:
+				default:
+				}
+			}
+		}
+	})
+
 	g.Go(func() error {
 		buf := make([]byte, 4096)
 		for {
@@ -196,11 +236,16 @@ func tailFollow(ctx context.Context, f *os.File) error {
 					default:
 					}
 					return nil
-				case eventErr := <-watcher.Errors:
-					if eventErr != nil {
-						return fmt.Errorf("watch log file: %w", eventErr)
+				case <-trigger:
+					// Check for file truncation (rotation) on wake
+					var stat os.FileInfo
+					if stat, _ = f.Stat(); stat != nil {
+						currentOffset, _ := f.Seek(0, io.SeekCurrent)
+						if stat.Size() < currentOffset {
+							_, _ = f.Seek(0, io.SeekStart)
+							fmt.Println("--- Log Truncated ---")
+						}
 					}
-				case <-watcher.Events:
 				}
 				continue
 			}
@@ -212,31 +257,3 @@ func tailFollow(ctx context.Context, f *os.File) error {
 	return g.Wait()
 }
 
-// splitTail returns the last n lines from content.
-func splitTail(content []byte, n int) []byte {
-	if len(content) == 0 {
-		return content
-	}
-
-	// Walk backwards counting newlines.
-	count := 0
-	i := len(content) - 1
-
-	// Skip trailing newline.
-	if content[i] == '\n' {
-		i--
-	}
-
-	for i >= 0 {
-		if content[i] == '\n' {
-			count++
-			if count == n {
-				return content[i+1:]
-			}
-		}
-		i--
-	}
-
-	// Fewer than n lines — return everything.
-	return content
-}

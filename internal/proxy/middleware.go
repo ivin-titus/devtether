@@ -10,8 +10,7 @@ import (
 )
 
 // loggingResponseWriter wraps an http.ResponseWriter to capture the HTTP
-// status code and response size. It strictly adheres to the Single
-// Responsibility Principle (SRP) to remain highly performant.
+// status code and response size.
 type loggingResponseWriter struct {
 	http.ResponseWriter
 	statusCode   int
@@ -66,8 +65,7 @@ func sanitize(s string) string {
 }
 
 // LoggingMiddleware wraps an http.Handler to provide access logging.
-// It sanitizes input to prevent CRLF injection while maintaining a clean,
-// structured output aesthetic.
+// It sanitizes input to prevent CRLF injection.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -83,7 +81,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			cleanPath += "?" + sanitize(r.URL.RawQuery)
 		}
 
-		// Smart Framework Noise Filter
+		// Filter websocket/HMR noise.
 		logLvl := "INFO"
 		if lrw.statusCode >= 500 {
 			logLvl = "ERROR"

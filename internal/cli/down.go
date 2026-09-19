@@ -33,6 +33,8 @@ func runDown(cmd *cobra.Command, args []string) error {
 	resp, err := client.ShutdownAndWait(cmd.Context())
 	if err != nil {
 		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
+			// Clean up the socket if it was left behind by an unclean shutdown.
+			daemon.CleanStaleSocket()
 			fmt.Println("DevTether daemon is not running.")
 			return nil
 		}
@@ -44,10 +46,15 @@ func runDown(cmd *cobra.Command, args []string) error {
 		fmt.Println("DevTether daemon stopped.")
 		return nil
 	}
-	// Drain the response body — blocks until the server closes the connection
-	// (EOF), which signals that the entire graceful shutdown is complete.
+	// Drain the response body. The daemon will close the connection immediately
+	// after triggering its shutdown sequence.
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+
+	// Wait for the daemon process to actually exit by polling its lockfile.
+	if waitErr := daemon.WaitForExit(cmd.Context()); waitErr != nil && !errors.Is(waitErr, daemon.ErrNoDaemon) {
+		return fmt.Errorf("failed while waiting for daemon to exit: %w", waitErr)
+	}
 
 	fmt.Println("DevTether daemon stopped.")
 	return nil

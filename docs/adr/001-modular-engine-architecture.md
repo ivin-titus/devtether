@@ -13,7 +13,7 @@ The initial version of DevTether was built as a monolithic daemon that tightly c
 
 During testing, we found that pointing DevTether at a real Next.js app inside a pnpm monorepo required convoluted CLI commands (`pnpm --filter portfolio exec next dev --turbopack -p $PORT`) just to bypass the framework's default port configuration. This friction defeated the tool's purpose of reducing developer cognitive load.
 
-We also identified that existing tools in the ecosystem (Vercel DevTether, frp, Ngrok) each solve only one piece of the local networking puzzle. No single tool combines static routing + orchestration + tunneling + access control.
+We also identified that existing tools in the ecosystem (e.g. Vercel Portless, frp, Ngrok) each solve only one piece of the local networking puzzle. No single tool combines static routing + orchestration + tunneling + access control.
 
 ## Decision
 
@@ -34,6 +34,13 @@ As the project evolved (v2.0), these 4 internal engines were conceptually groupe
 - **Layer 3 (Access Controls):** Powered by Engine 3 (Tunneling) and Engine 4 (Access Control).
 
 The strict internal boundaries of the 4 engines remain intact in the codebase, ensuring high modularity and separation of concerns.
+
+## Future UI (YAGNI & Minimalism)
+
+If a graphical user interface (GUI) or traffic inspector is ever introduced, it **MUST** adhere to DevTether's strict minimalist philosophy.
+- **No Heavy Frameworks:** Electron, Tauri, or heavyweight SPA frameworks (React/Vue) are explicitly banned.
+- **Zero-Allocation Rendering:** We rely purely on `//go:embed` to bundle static assets (e.g. Vanilla JS, CSS, and Base64 encoded SVGs/PNGs) and standard library templating (`html/template`) injected at `init()` time.
+- **Why (YAGNI):** DevTether is a background networking daemon. A 200MB memory footprint for a local routing GUI is severe overengineering. Our approach ensures the entire application remains a single, lightweight binary with zero external file dependencies or massive build pipelines.
 
 ## Consequences
 

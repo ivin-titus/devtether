@@ -1,4 +1,4 @@
-# 9. Proxy Security Lessons & Defense-in-Depth
+# ADR-009: Proxy Security Lessons & Defense-in-Depth
 
 Date: 2026-09-08
 
@@ -43,15 +43,14 @@ We have grouped the major industry vulnerabilities into three primary categories
 
 **Our Defensive Posture:**
 - **Current Status (SAFE):** We do not yet host a Web GUI or SSE stream.
-- **Future Defense (Traffic Inspection GUI):** When we implement the `/api/stream` Server-Sent Events (SSE) or WebSockets for the UI, we MUST implement strict `Origin` and `Sec-Fetch-Site` header validation. Cross-origin requests to the IPC bridge must be violently rejected to prevent malicious websites from scraping local proxy traffic.
+- **Future Defense (Traffic Inspection GUI):** When we implement the `/api/stream` Server-Sent Events (SSE) or WebSockets for the UI, we MUST implement strict `Origin` and `Sec-Fetch-Site` header validation. Cross-origin requests to the IPC bridge must be strictly rejected to prevent malicious websites from scraping local proxy traffic.
 
 ### 5. Insecure Service Integration
 **Industry Failures:**
 - **Systemd Privilege Escalation:** Systemd (`unit_deserialize` CVE-2018-15686) and various application installer scripts (e.g., placing binaries or `.service` files in world-writable directories) have historically allowed unprivileged users to overwrite the daemon binary before systemd executes it as root.
 
 **Our Defensive Posture:**
-- **Current Status (SAFE):** DevTether is currently invoked manually via CLI.
-- **Future Defense (OS-Native Service Management):** If DevTether implements OS-native service management features in the future, the integration MUST verify that the target binary path is owned by root and `chmod 0755`. The OS service definitions must strictly drop privileges using `User=` and `Group=` directives if the proxy binds to unprivileged ports (e.g., >1024), minimizing the attack surface.
+- **Current Status (SAFE / IMPLEMENTED):** We implemented `devtether service install` which enforces strict `User=` and `Group=` privilege drops across `systemd` and `launchd` templates. The daemon creates isolated runtime sockets (e.g. `0700` directories) to prevent root-owned sockets from leaking, enabling safe mixed-privilege operations.
 
 ### 6. Terminal Log Forging & ANSI Injection
 **Industry Failures:**
@@ -60,6 +59,13 @@ We have grouped the major industry vulnerabilities into three primary categories
 **Our Defensive Posture:**
 - **Current Status (SAFE):** DevTether uses Go's structured `log/slog` library. When untrusted strings (like `r.URL.Path` or `r.Host`) are logged, `slog` securely escapes unprintable control characters and ANSI sequences, preventing terminal manipulation.
 - **Future Defense (Custom Terminal UI):** If we ever re-introduce a custom terminal UI (e.g., `text/tabwriter` or interactive dashboards), we MUST explicitly sanitize all proxy metadata using `strconv.Quote` before printing to `stdout`.
+
+### 7. Resource Exhaustion & Log DoS (throttleCache)
+**Industry Failures:**
+- **Memory Leaks via Error Logs:** Unbounded caching of proxy error states or unique malicious hostnames frequently leads to OOM (Out Of Memory) crashes during network scanning or DoS attempts.
+
+**Our Defensive Posture:**
+- **Current Status (SAFE / IMPLEMENTED):** We implemented a hybrid LRU/TTL `throttleCache` for proxy error logs. To avoid the massive overhead of strict TTL timers or standard LRU linked-lists under heavy concurrent load, we rely on an O(1) randomized map eviction strategy. This provides bounded memory usage and DoS resilience while adhering to our zero-dependency, high-performance mandates.
 
 ## Decision
 To guarantee DevTether never succumbs to these vulnerabilities, we adopt the following strict architectural rules:
@@ -73,14 +79,17 @@ To guarantee DevTether never succumbs to these vulnerabilities, we adopt the fol
 3. **Strict Fallback Protocols:**
    - Never implement a "catch-all" route. Always reject unrecognized `Host` headers to prevent DNS Rebinding.
    - Socket creation must be atomic. Set process `umask` (e.g., `0177`) *before* calling `net.Listen("unix")` to eliminate TOCTOU races.
+   - **Fail-Fast Port Binding:** Never silently fall back to a random unprivileged port (e.g., `:0`) if a configured port is occupied or lacks permissions. Fallbacks must be strict, fully predictable, and immediately fatal if they fail, ensuring deterministic system architecture.
 4. **Protocol Hardening (Future TLS Integrations):**
    - When TLS (and thereby HTTP/2) is eventually introduced, the proxy MUST enforce `MaxConcurrentStreams` limits and compile against Go >= 1.21.3.
 5. **Strict Origin Validation (Future Web GUI):**
    - Any future WebSocket or Server-Sent Events (SSE) endpoints MUST aggressively validate `Origin` and `Sec-Fetch-Site` headers to prevent Cross-Site WebSocket Hijacking (CSWSH).
-6. **Secure System Daemonization (Future OS-Native Services):**
-   - System service installers MUST enforce strict `root:root` ownership of binaries and drop proxy execution privileges using `User=` directives when binding to unprivileged ports.
+6. **Secure System Daemonization (Implemented):**
+   - System service installers MUST enforce strict `root:root` ownership of binaries and drop proxy execution privileges using `User=` and `Group=` directives.
 7. **Terminal Output Sanitization:**
    - Any raw HTTP metadata (User-Agent, URI, Headers) printed to a terminal UI MUST be sanitized (e.g., `strconv.Quote`) to neutralize ANSI escape sequence injection.
+8. **Memory Bounding (throttleCache):**
+   - Proxy-layer caches indexing untrusted network input (e.g., failed `Host` resolutions) MUST be strictly memory-bounded using O(1) eviction strategies to prevent OOM DoS attacks.
 
 ## Consequences
 - **Positive:** DevTether remains structurally immune to the most devastating reverse proxy vulnerabilities seen in the last decade.

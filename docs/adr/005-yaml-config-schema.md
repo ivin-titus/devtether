@@ -38,7 +38,6 @@ proxy:
   port: 80
   timeouts:
     idle: 120s
-    read_header: 10s
 
 dns:
   bind: "127.0.0.1:53"
@@ -76,6 +75,11 @@ access:
 2. **Progressive disclosure** — A minimal config is just 2 lines (`routes:\n  portfolio.localhost: 3222`). Advanced features are opt-in via additional sections.
 3. **Engine activation by presence** — If a section is absent, that engine is not loaded. No `enabled: false` boilerplate needed.
 4. **Environment variable interpolation** — All string values support `${ENV_VAR}` syntax for secret management.
+
+### YAGNI & Feature Deferral (Live Reload)
+We explicitly decided **not** to implement live hot-reloading (`fsnotify` on `devtether.yaml`) in the Beta.
+- **Why:** The DevTether core design prioritizes stability and minimal moving parts. Live config swapping introduces massive concurrency challenges (e.g. atomically swapping out the router map while in-flight HTTP streams are actively using it, or dealing with half-written YAML saves).
+- **YAGNI Rationale:** For local development, typing `<Ctrl-C>` and `devtether up` takes ~400ms. Implementing a complex `inotify/kqueue` file-watcher with atomic pointer swaps inside the proxy hot-path is textbook overengineering. We will reconsider live-reloading *only* if user demand overwhelmingly proves that simple daemon restarts are an actual bottleneck to DX.
 
 ## Consequences
 

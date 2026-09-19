@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -88,7 +89,7 @@ const DefaultProxyPort = 80
 
 // DefaultDNSBind is the default bind address for the DNS engine.
 // Loopback-only by default per ADR-003 (secure by default).
-const DefaultDNSBind = "127.0.0.1:53"
+const DefaultDNSBind = "127.0.0.1:5335"
 
 // DefaultIdleTimeout is the default proxy idle timeout.
 const DefaultIdleTimeout = 120 * time.Second
@@ -167,6 +168,14 @@ func (c *Config) validate() error {
 	return c.validateDNS()
 }
 
+// localhostRouteName matches a DNS name under the .localhost TLD: one or more
+// lowercase labels of 1-63 characters (RFC 1035 label length), each starting
+// and ending alphanumerically, followed by the .localhost TLD. Nested
+// subdomains are allowed; wildcards and invalid characters are not, so a typo
+// cannot register a route the DNS engine would never answer for (ADR-002)
+// and wildcard abuse is rejected.
+var localhostRouteName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.localhost$`)
+
 // validateRoutes checks that all static route entries are valid.
 func (c *Config) validateRoutes() error {
 	for domain, port := range c.Routes {
@@ -175,6 +184,11 @@ func (c *Config) validateRoutes() error {
 		}
 		if strings.TrimSpace(domain) != domain {
 			return fmt.Errorf("routes: domain %q must not have surrounding whitespace", domain)
+		}
+		// DNS names are case-insensitive (RFC 4343) and the router lowercases
+		// keys on registration, so enforce structure on the normalized form.
+		if !localhostRouteName.MatchString(strings.ToLower(domain)) {
+			return fmt.Errorf("routes: domain %q must be a DNS name ending in .localhost (no wildcards; e.g. app.localhost)", domain)
 		}
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("routes: port %d for domain '%s' is out of valid range (1-65535)", port, domain)

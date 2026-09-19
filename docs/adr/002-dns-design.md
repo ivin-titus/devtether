@@ -15,9 +15,10 @@ However, running a DNS server introduces significant security risks:
 
 ## Decision
 
-1. **Non-recursive by design** — DevTether will **never** forward DNS queries to upstream resolvers. It only answers queries for the `.localhost` TLD (and `.internal` in the future Engine 3). All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision. *(Note: Restricting the TLD to `.localhost` is a strict YAGNI simplification. Custom TLD arrays will only be supported if genuine user demand arises).*
-2. **Loopback-only by default** — DNS binds to `127.0.0.1:53` by default. It only binds to `0.0.0.0:53` when `--lan` mode is explicitly enabled.
-3. **Cached LAN IP** — The local IP is resolved once on startup and cached. It is refreshed only on detected network changes (interface up/down events), not per-query.
+1. **Non-recursive by design** — DevTether will **never** forward DNS queries to upstream resolvers. It only answers queries for the `.localhost` TLD. All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision.
+2. **Loopback-only by default** — DNS binds to `127.0.0.1:5335` by default to remain completely unprivileged and avoid mDNS port conflicts (`5353`). It only binds to `0.0.0.0:53` when `--lan` mode is explicitly enabled with sudo.
+3. **Fail-Fast Predictability** — We eliminated the legacy behavior of silently falling back to unprivileged ports if port 53 was occupied. The daemon now strictly binds to the port specified in `devtether.yaml` (defaulting to 5335) and crashes cleanly if it cannot.
+4. **Cached LAN IP** — The local IP is resolved once on startup and cached. It is refreshed only on detected network changes (interface up/down events), not per-query.
 
 ## Consequences
 
@@ -29,8 +30,13 @@ However, running a DNS server introduces significant security risks:
 
 ### Negative
 
-- Developers must configure their OS resolver (e.g., `systemd-resolved`) to forward specific TLDs to `127.0.0.1:53`. This is a one-time setup step documented in the README.
+- Developers must configure their OS resolver (e.g., `systemd-resolved`) to forward specific TLDs to `127.0.0.1:5335`. This is a one-time setup step documented in the README and automated via `devtether init`.
 - In LAN mode, the DNS server is exposed to the local network, which is a deliberate and accepted tradeoff for the LAN sharing feature.
+
+### YAGNI & Scope Limitation (Custom TLDs)
+Early architectural drafts included support for `.internal` or completely customizable TLD arrays. We have explicitly dropped this in favor of hardcoding `.localhost`.
+- **Why:** Supporting arbitrary TLDs significantly increases the complexity of OS integration (e.g., conflicting with mDNS `.local` or breaking corporate `.internal` resolutions) and creates a massive testing matrix across macOS and Linux resolvers.
+- **YAGNI Rationale:** We adhere strictly to the "Lazy Senior Dev" mindset. Hardcoding `.localhost` solves 99% of local development routing needs perfectly. Building complex customizable TLD injection is overengineering a problem our users don't actually have yet. We will reconsider this *only* if concrete user demand arises.
 
 ## Amendment 
 **Date:** 2026-09-07

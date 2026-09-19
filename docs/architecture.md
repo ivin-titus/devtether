@@ -52,7 +52,10 @@ graph TB
 DevTether operates on a **Unified Interface** principle. The Web GUI (`devtether.localhost`) is completely stateless and lazy-loaded (it is NOT a heavy background process). Both the CLI (e.g., `devtether stop api`) and the Web GUI call the exact same internal **IPC Daemon REST API**. This guarantees zero DRY violations — whatever is possible in the GUI is equally possible via the CLI.
 
 ### Onboarding (Interactive Wizard)
-DevTether provides a seamless interactive setup flow via `devtether init`. This command dynamically assesses the user's OS and TTY environment to generate a safe `devtether.yaml` configuration. It supports declarative overrides (e.g., `--daemon`, `--force`) and native OS-aware capabilities (such as applying `setcap` on Linux automatically) while safely bypassing prompts in CI/CD environments.
+DevTether provides a seamless interactive setup flow via `devtether init`. This command dynamically assesses the user's OS and TTY environment to generate a safe `devtether.yaml` configuration. It supports declarative overrides (e.g., `--daemon`, `--force`) and native OS-aware capabilities (applying `setcap` on Linux, pointing the system resolver at DevTether for `*.localhost`) while safely bypassing prompts in CI/CD environments. The CLI isolates all system mutations via explicit `sudo` commands (rather than requiring the entire CLI to run as root).
+
+### CLI Daemon Interactivity (`logs -f`)
+The CLI acts as a rich foreground client for the background daemon. Commands like `devtether logs -f` implement robust truncation detection and lockfile polling to provide a seamless tailing experience, automatically exiting if the daemon crashes or shuts down.
 
 ---
 
@@ -60,13 +63,13 @@ DevTether provides a seamless interactive setup flow via `devtether init`. This 
 
 ### DNS Engine (`internal/dns`)
 
-The DNS engine intercepts UDP queries on port 53 for configured TLDs and resolves them locally.
+The DNS engine intercepts UDP queries on port 53 for the `.localhost` TLD and resolves them locally.
 
 **Behavior:**
-- Default bind: `127.0.0.1:53` (loopback only)
-- Fallback chain: `53` → `5353` → `Non-Fatal Error` (proxy still works without DNS)
-- LAN mode bind: `0.0.0.0:53` (all interfaces)
-- Responds to A record queries for configured TLDs (e.g. `.localhost`)
+- Default bind: `127.0.0.1:5335` (safe unprivileged loopback only)
+- LAN mode bind: `0.0.0.0:53` (all interfaces, requires privileges)
+- **Fail-Fast**: The legacy `5353` fallback was removed. If the configured port fails to bind, the daemon crashes deterministically.
+- Responds to A record queries for the `.localhost` TLD
 - Returns `127.0.0.1` in solo mode, or the host's LAN IP in `--lan` mode
 - All non-matching queries receive `NXDOMAIN` — DevTether never forwards upstream
 - LAN IP is cached on startup and refreshed on network changes (not per-query)
@@ -79,8 +82,9 @@ The HTTP reverse proxy is the primary data plane for all engines.
 
 **Behavior:**
 - Default bind: `127.0.0.1:80`
-- Fallback chain: `127.0.0.1:80` → `127.0.0.1:8080` → `127.0.0.1:0` (OS-assigned port) on `EACCES` or `EADDRINUSE`
+- Fallback chain: `127.0.0.1:80` → `127.0.0.1:8080`. The random `:0` fallback was removed in beta.7 to strictly enforce a fail-fast architecture, ensuring port assignments are completely predictable.
 - Uses `http.Server{}` with `ReadHeaderTimeout` (Slowloris protection) and `IdleTimeout` (dead connection pruning). Absolute read/write timeouts are intentionally omitted to support WebSocket, SSE, and streaming workloads (see ADR-008).
+- **Security (throttleCache):** Implements an O(1) hybrid LRU/TTL random map eviction cache for proxy error logs. This strictly bounds memory usage to prevent OOM (Out Of Memory) Denial of Service attacks when port scanners or malicious scripts repeatedly hit unresolved endpoints.
 - Supports `Connection: Upgrade` for WebSocket pass-through (HMR, live reload)
 - Strips and re-sets `X-Forwarded-*` headers to prevent injection
 - Enforces loopback-only targets — routes can only point to `127.0.0.1:<port>`
@@ -110,16 +114,17 @@ type Target struct {
 
 - Protected by `sync.RWMutex` for concurrent read/write safety
 - Shared by both static routes and orchestrated services
-- Route changes require a daemon restart: `devtether down && devtether up`. Live reload via IPC is not available in the current beta.
+- Route changes require a daemon restart: `devtether down && devtether up`. Opt-in hot reloading is planned as a future enhancement based on community demand.
 
 ### IPC Daemon (`internal/daemon`)
 
 Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication.
 
 **Instance Ownership (ADR-003):**
-- Primary authority: `flock(LOCK_EX)` on `devtether.lock` ensures exact instance ownership without race conditions. Kernel releases the lock on exit.
+- Primary authority: `flock(LOCK_EX)` on `devtether.lock` ensures exact instance ownership without race conditions. Kernel releases the lock on exit (including SIGKILL).
 - Secondary authority: `devtether.pid` for diagnostics, and `devtether.nonce` for authenticated shutdown.
-- Liveness check: Background goroutines block on `flock(LOCK_EX)` against the lock file for instant notification of daemon death (zero polling).
+- Liveness check: Commands like `devtether logs -f` and `devtether down` monitor daemon health by attempting non-blocking `flock(LOCK_EX|LOCK_NB)` on the lock file (polling via `daemon.WaitForExit`), exiting immediately if the lock becomes available.
+- OS Signaling: Foreground daemons trap `SIGINT` (Ctrl+C) and `SIGTERM` (System Monitor) via `signal.NotifyContext` to trigger the graceful shutdown sequence and manually release locks/sockets.
 
 **Daemon Startup Sequence & Readiness:**
 - **`flock`**: Acquires exclusive filesystem lock before any other socket action.
@@ -151,8 +156,8 @@ This layer handles all traffic, routing, and local network topologies.
 **Config section:** `routes:`
 
 - **Static Routing:** Maps pre-existing services on fixed ports to named domains. No process management. The Router is populated directly from the YAML config.
-- **[Planned] Intelligent IP Cycling:** Actively scans `/proc/net/tcp` for `0.0.0.0` bindings. If `127.0.0.1:80` is occupied, it cycles to `127.0.0.2`, `127.0.0.3`, etc., using highly optimized O(1) checks.
-- **[Planned] Smart CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while blocking cross-project local access.
+- **[Planned] Fallback Port Binding:** Automatically detects if `127.0.0.1:80` is occupied and gracefully attempts fallback ports (`127.0.0.1:8080`).
+- **[Planned] Smart Routing-Based CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while safely managing project boundaries.
 - **[Planned] Traffic Inspection:** Buffers payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays.
 - **Rich Error Pages:** Serves an ultra-lightweight HTML error page if a backend goes down.
 
@@ -255,7 +260,7 @@ devtether/
 ### The Stateless Web GUI (`devtether.localhost`)
 The Web GUI is an ultra-lightweight (Vanilla JS / Preact) dashboard served internally via the Proxy Engine.
 - **Zero State:** It acts strictly as a visual editor for `devtether.yaml` and a consumer of the IPC Daemon's REST API.
-- **Updates:** When a user clicks "Add Service" in the GUI, it updates the YAML file via the IPC API. (Note: Hot-reload via IPC is planned; currently, route changes require a daemon restart).
+- **Updates:** When a user clicks "Add Service" in the GUI, it updates the YAML file via the IPC API. (Note: Opt-in hot reloading is planned as a future enhancement based on community demand).
 - **Network Inspector:** Buffers requests using `sync.Pool` (adhering to zero-bloat engineering standards) and streams them over the IPC socket for webhook inspection and replay.
 
 ### Unified Logging Architecture

@@ -100,15 +100,15 @@ func (c *Client) Shutdown(ctx context.Context) error {
 }
 
 // ShutdownAndWait sends a shutdown request and returns the response for the
-// caller to drain. The server's /shutdown handler keeps the HTTP connection
-// open during the entire graceful shutdown (including proxy drain). The caller
-// should drain the response body with io.Copy(io.Discard, resp.Body) — when
-// the read returns (EOF), the daemon has fully stopped.
+// caller to drain. The server's /shutdown handler flushes the response and
+// closes the connection immediately. The caller should drain the response body
+// with io.Copy(io.Discard, resp.Body), close it, and then explicitly poll
+// daemon.WaitForExit() to know when the daemon process has actually exited.
 //
 // The caller is responsible for closing resp.Body.
 func (c *Client) ShutdownAndWait(ctx context.Context) (*http.Response, error) {
-	// Use a separate client with a longer timeout to accommodate the full
-	// shutdown sequence: IPC shutdown (10s) + proxy drain (5s) + buffer.
+	// Use a standard client timeout since the HTTP request itself completes
+	// immediately, delegating the long wait to WaitForExit.
 	longClient := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {

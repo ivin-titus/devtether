@@ -163,7 +163,8 @@ type throttleCache struct {
 }
 
 // LoggedRecently returns true if the targetURL was logged within the cooldown period.
-// It implements a hybrid TTL + random eviction strategy to stay within logCacheLimit.
+// It implements a random eviction strategy to stay within logCacheLimit.
+// For the true deferred TTL strategy, see docs/workspace/.ideas/hybrid_ttl_eviction.md.
 func (c *throttleCache) LoggedRecently(targetURL string, cooldown time.Duration) bool {
 	now := time.Now()
 

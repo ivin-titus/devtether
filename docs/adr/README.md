@@ -14,6 +14,11 @@ ADRs document the key technical decisions made during the design and implementat
 | [004](004-relay-as-separate-binary.md) | Relay as Separate Binary | ✅ Accepted | 2026-05-30 |
 | [005](005-yaml-config-schema.md) | Unified YAML Config Schema | ✅ Accepted | 2026-05-30 |
 | [006](006-platform-support-and-cgo-policy.md) | Platform Support & CGo Policy | ✅ Accepted | 2026-09-02 |
+| [007](007-defensive-edge-normalization.md) | Defensive Edge Normalization | ✅ Accepted | 2026-09-07 |
+| [008](008-proxy-streaming-integrity.md) | Proxy Streaming Integrity | ✅ Accepted | 2026-09-07 |
+| [009](009-proxy-security-lessons.md) | Proxy Security Lessons & Defense-in-Depth | ✅ Accepted | 2026-09-08 |
+| [010](010-ai-contribution-liability.md) | AI Contribution Liability | ✅ Accepted | 2026-09-12 |
+| [011](011-init-wizard-and-system-mutations.md) | Init Wizard & System Mutations | ✅ Accepted | 2026-09-19 |
 
 ## ADR Format
 
