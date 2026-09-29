@@ -1,64 +1,58 @@
 # ADR-001: Modular Engine Architecture
 
-**Status:** Accepted
-**Date:** 2026-05-30
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Reconciled:** 2026-09-28
 
 ## Context
 
-The initial version of DevTether was built as a monolithic daemon that tightly coupled process orchestration, DNS resolution, and reverse proxying into a single `devtether start` command. This created several problems:
+The original DevTether prototype coupled process orchestration, DNS, and reverse proxying into one daemon workflow. That made simple local routing depend on concerns that did not belong to it.
 
-1. **High cognitive load** — Users who only wanted simple domain-to-port mapping were forced to learn the orchestration model, understand `$PORT` injection, and rewrite their framework startup commands.
-2. **All-or-nothing** — There was no way to use just the DNS+proxy layer without the process supervisor.
-3. **Limited scope** — The architecture had no extension points for tunneling or access control.
-
-During testing, we found that pointing DevTether at a real Next.js app inside a pnpm monorepo required convoluted CLI commands (`pnpm --filter portfolio exec next dev --turbopack -p $PORT`) just to bypass the framework's default port configuration. This friction defeated the tool's purpose of reducing developer cognitive load.
-
-We also identified that existing tools in the ecosystem (e.g. Vercel Portless, frp, Ngrok) each solve only one piece of the local networking puzzle. No single tool combines static routing + orchestration + tunneling + access control.
+The rewrite separates those concerns so the local networking core can remain small while future capabilities are added independently.
 
 ## Decision
 
-Restructure DevTether into **4 independent engines** inside a single binary:
+The target architecture uses **4 independent engines**:
 
-1. **Engine 1: Static Routing** — Pure DNS + proxy. Maps domains to pre-existing ports. Zero process management.
-2. **Engine 2: Orchestration** — Process supervisor with dynamic `$PORT` injection. Opt-in only.
-3. **Engine 3: Tunneling** — LAN sharing (mDNS) and WAN tunneling (self-hosted relay). Opt-in only.
-4. **Engine 4: Access Control** — Token-based RBAC at the proxy layer. Opt-in only.
+1. **Engine 1 — Static Routing:** embedded DNS and HTTP reverse proxy for pre-existing local services.
+2. **Engine 2 — Orchestration:** process supervision and dynamic `$PORT` allocation.
+3. **Engine 3 — Tunneling:** LAN sharing and WAN tunneling through a self-hosted relay.
+4. **Engine 4 — Access Control:** scoped tokens and RBAC for shared services.
 
-Each engine is activated by its presence in the `devtether.yaml` config. If a section is absent, that engine is not loaded.
+### Current beta boundary
 
-## Evolution: The Three-Layer Architecture
+Only Engine 1 is implemented in beta. The config package contains the future engine types for schema planning, but the current validator rejects `orchestrate:`, `tunnel:`, and `access:` until those engines are implemented.
 
-As the project evolved (v2.0), these 4 internal engines were conceptually grouped into a user-facing **Three-Layer Architecture** to simplify the mental model for developers:
-- **Layer 1 (Networking):** Powered by Engine 1 (Static Routing) + Shared Infrastructure.
-- **Layer 2 (Orchestrator):** Powered by Engine 2 (Orchestration).
-- **Layer 3 (Access Controls):** Powered by Engine 3 (Tunneling) and Engine 4 (Access Control).
+The rule that “engine activation is driven by the presence of its config section” is therefore a **target architecture rule**, not a current beta capability.
 
-The strict internal boundaries of the 4 engines remain intact in the codebase, ensuring high modularity and separation of concerns.
+## Three conceptual layers
 
-## Future UI (YAGNI & Minimalism)
+For user-facing architecture discussions, the four engines may be grouped as:
 
-If a graphical user interface (GUI) or traffic inspector is ever introduced, it **MUST** adhere to DevTether's strict minimalist philosophy.
-- **No Heavy Frameworks:** Electron, Tauri, or heavyweight SPA frameworks (React/Vue) are explicitly banned.
-- **Zero-Allocation Rendering:** We rely purely on `//go:embed` to bundle static assets (e.g. Vanilla JS, CSS, and Base64 encoded SVGs/PNGs) and standard library templating (`html/template`) injected at `init()` time.
-- **Why (YAGNI):** DevTether is a background networking daemon. A 200MB memory footprint for a local routing GUI is severe overengineering. Our approach ensures the entire application remains a single, lightweight binary with zero external file dependencies or massive build pipelines.
+| Layer | Engine mapping | Current status |
+|---|---|---|
+| Layer 1 — Local Networking | Engine 1 + shared infrastructure | Current |
+| Layer 2 — Orchestration | Engine 2 | Future |
+| Layer 3 — Sharing & Access | Engine 3 + Engine 4 | Future |
+
+This keeps tunneling out of the current Layer 1 scope.
+
+## Future GUI strategy
+
+A GUI, if implemented later, should remain a lightweight client of the daemon rather than becoming a second runtime architecture.
+
+The current target is:
+
+- embedded static assets;
+- no heavyweight desktop runtime;
+- shared management semantics with the CLI;
+- strict browser-origin validation.
+
+The GUI is **not implemented in beta.7**.
 
 ## Consequences
 
-### Positive
-
-- **Reduced friction** — Users who just want `portfolio.localhost → 3222` only need the `routes:` section. No process management knowledge required.
-- **Incremental adoption** — Teams can start with static routing and progressively adopt orchestration, tunneling, and RBAC as their needs grow.
-- **Competitive advantage** — No other tool in the ecosystem offers this combination in a single binary.
-- **Testability** — Each engine can be unit-tested independently.
-
-### Negative
-
-- **Increased codebase complexity** — More packages, more interfaces, more integration points.
-- **Documentation burden** — Each engine needs its own documentation, examples, and troubleshooting guides.
-- **Risk of feature creep** — Must maintain discipline about what belongs inside DevTether vs. what should be a separate tool.
-
-### Mitigation
-
-- Strict package boundaries (`internal/dns`, `internal/proxy`, `internal/orchestrator`, `internal/tunnel`, `internal/access`)
-- Shared infrastructure (Router, DNS, Proxy) is engine-agnostic and doesn't import engine-specific packages
-- The `devtether.yaml` schema enforces clear separation — each engine has its own top-level key
+- Users can adopt local routing without learning process orchestration.
+- Future engines have explicit boundaries before implementation begins.
+- The current codebase avoids speculative engine coupling.
+- Documentation can distinguish the shipped Engine 1 implementation from the target platform architecture.

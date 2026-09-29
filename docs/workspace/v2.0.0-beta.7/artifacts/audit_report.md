@@ -1,3 +1,5 @@
+> **Historical release audit:** This file records beta.7 audit snapshots. Its conclusions are not current implementation truth. Later source and documentation changes may supersede them; see the current repository documentation-consistency audit at `docs/workspace/portfolio-documentation-sync-audit.md`.
+
 # Audit Report: v2.0.0-beta.7
 
 **Date:** 09/15/2026
@@ -437,8 +439,8 @@ An exhaustive post-implementation review of Subphase 4.7 against `ADR-002` (DNS 
 - **Impact:** Violation of Subphase 4.7 determinism goals. The user would think DevTether started successfully, but `.localhost` resolution would be dead.
 - **Remediation:** Immediately patched `up.go` to `return fmt.Errorf("fatal dns bind error: %w", err)`. The daemon now crashes instantly and loudly if the configured DNS port cannot be bound.
 
-### Audit Conclusion
-All unit tests are fully green. The port `5335` enforcement is now fully implemented, strict, and deterministic across the codebase. No further regressions were detected in the DNS or Proxy boot sequences.
+### Historical Audit Conclusion
+All unit tests were green at the time of this release audit. The conclusion recorded here is a release-era snapshot and does not override later repository consistency reviews.
 
 ---
 
@@ -449,11 +451,11 @@ Project-wide final check before marking `beta.7` as complete.
 ### Audit Checklist
 1. **Tests & Compilation:** `make test` executes lint, vet, vulcheck, unit tests (race enabled), and cross-compilation (linux/darwin). Result: `100% PASS`.
 2. **Tracker Sync:** `docs/workspace/v2.0.0-beta.7/tracker.md` cross-referenced against git state. All active tasks (Subphases 4.1 to 4.7) are resolved. The single outstanding idea (Health check refactor) was properly deferred to `beta.8` via the `.ideas/` directory.
-3. **Documentation Integrity:** All markdown files strictly adhere to `AGENTS.md` guidelines. Ephemeral tracking tags have been purged from permanent docs, no "production-ready" claims remain, and ADRs (001-011) perfectly reflect the shipped architecture (DNS Wizard, Memory throttle, Proxy Streaming exceptions).
+3. **Documentation Integrity:** All markdown files strictly adhere to `AGENTS.md` guidelines. Ephemeral tracking tags have been purged from permanent docs, no "production-ready" claims remain, and The release audit recorded that ADRs 001-011 matched the reviewed beta.7 state at that time. That conclusion is historical and is superseded by the current repository documentation-consistency audit.
 4. **Code Quality:** Code conforms to "Lazy Senior Dev" (YAGNI) standards. All `//go:embed` assets are zero-allocation, dependencies are entirely standard library + Cobra/term, and no active/infinite polling loops run without reason (health check softened).
 5. **Architectural Security:** The daemon lockfile, socket symlink guards, OS DNS modifications, and setcap warnings are all correctly implemented per ADR-003.
 
-### 🟢 DECISION: YES (PASS)
+### Historical decision at release time: YES (PASS) — superseded by later documentation review
 The current `v2.0.0-beta.7` branch is completely stable, strictly conforms to its specifications, and is approved for final release merging.
 
 ---

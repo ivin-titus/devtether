@@ -1,3 +1,5 @@
+**Historical / superseded artifact:** Service-mode implementation discussions recorded here do not describe the current develop tree. System-level service management is currently deferred and the corresponding implementation is absent from the current source.
+
 # Deferred Audit Findings (Service Module)
 
 ## 10. Pre-Phase 3 Readiness Audit

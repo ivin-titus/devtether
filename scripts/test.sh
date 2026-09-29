@@ -1,11 +1,11 @@
 #!/bin/sh
 # DevTether local QA script.
-# Mirrors CI checks so issues are caught before code leaves the dev machine.
+# Covers the core local QA categories; CI remains authoritative and also runs tests on macOS.
 #
 # Usage:
 #   ./scripts/test.sh
 #
-# Rule: this script must pass before pushing. If it passes locally, CI will pass.
+# Rule: run this before pushing. CI is the final gate and may exercise additional platform/tooling coverage.
 
 set -eu
 

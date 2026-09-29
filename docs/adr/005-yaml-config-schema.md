@@ -1,38 +1,26 @@
 # ADR-005: Unified YAML Config Schema
 
-**Status:** Accepted
-**Date:** 2026-05-30
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Reconciled:** 2026-09-28
 
 ## Context
 
-DevTether's internal architecture relies on 4 independent engines (conceptually grouped into Three Layers), each with different configuration needs. We needed to decide between:
+DevTether uses one `devtether.yaml` so current local routing stays simple while future engines can have their own configuration sections.
 
-1. **Separate config files per engine** (e.g., `devtether-routes.yaml`, `devtether-orchestrate.yaml`, `devtether-tunnel.yaml`)
-2. **A single unified `devtether.yaml`** with top-level keys for each engine
+## Current beta schema
 
-## Decision
-
-Use a **single `devtether.yaml`** with distinct top-level keys for each engine.
-
-> [!NOTE]
-> **Beta Scope & TLD Simplification**
-> The schema below illustrates the unified structure for all planned engines. However, in the current Beta (Engine 1 only), only the `routes:`, `settings:`, `proxy:`, and `dns:` sections are active. Furthermore, to simplify configuration and prevent route bypasses, the `dns.tld` setting was removed in favor of hardcoding `.localhost`. `.internal` is reserved for the future Engine 3.
-
-### Currently Supported (Engine 1)
-
-> **TLD Restriction**: In the current Engine 1 (Beta), the system strictly enforces the `.localhost` TLD. The configuration does **not** support expanding or modifying the DNS TLD (e.g. attempting to add `.internal` or custom TLDs will not work). This simplification prevents route bypasses and OS resolver complexity.
+The current binary accepts:
 
 ```yaml
-# Engine 1 (Layer 1): Static Routes
 routes:
-  portfolio.localhost: 3222
-  job-flow.localhost: 3223
+  web.localhost: 3222
+  api.localhost: 8042
 
-# Global Settings
 settings:
   daemon: false
   verbose: false
-  log_path: .logs/devtether.log
+  log_path: "./.logs"
 
 proxy:
   port: 80
@@ -40,57 +28,49 @@ proxy:
     idle: 120s
 
 dns:
-  bind: "127.0.0.1:53"
-  # Note: `tld` array is NOT supported in Engine 1. It is hardcoded to `.localhost`.
+  bind: "127.0.0.1:5335"
 ```
 
-### Planned for Future (Engines 2-4)
+The YAML decoder uses strict field checking, so unknown keys are rejected rather than silently ignored.
 
-> **Future TLD Expansion**: When Engine 3 (Tunnel/LAN) is released, DevTether will officially support expanding the DNS scope to `.internal` and potentially other TLDs for LAN and WAN sharing.
+### Current constraints
+
+- Route names must be valid `.localhost` names.
+- `dns.bind` is the exact DNS listener address.
+- `proxy.timeouts.read` and `proxy.timeouts.write` are not supported.
+- There is no `dns.tld` configuration.
+- `.internal` is not a current namespace.
+- `orchestrate:`, `tunnel:`, and `access:` are future-engine sections and are currently rejected by validation.
+
+## Future schema
+
+The long-term design may introduce:
 
 ```yaml
-# Engine 2 (Layer 2): Orchestrated Services
 orchestrate:
   api:
     domain: api.localhost
     command: uvicorn main:app --port $PORT
-    cwd: ./services/api
-    restart: on-failure
 
-# Engine 3 (Layer 3): Tunnel Config
 tunnel:
-  relay: dev.yourcompany.com
+  relay: dev.example.com
   lan: true
 
-# Engine 4 (Layer 3): Access Control
 access:
   enabled: true
-  require_token: ["api.*", "admin.*"]
-  public: ["app.*", "docs.*"]
+  require_token: ["api.*"]
+  public: ["docs.*"]
 ```
 
-### Design Principles
+These are **planning examples only**.
 
-1. **Familiar ergonomics** — The structure mirrors `docker-compose.yaml` conventions. Developers already understand this pattern.
-2. **Progressive disclosure** — A minimal config is just 2 lines (`routes:\n  portfolio.localhost: 3222`). Advanced features are opt-in via additional sections.
-3. **Engine activation by presence** — If a section is absent, that engine is not loaded. No `enabled: false` boilerplate needed.
-4. **Environment variable interpolation** — All string values support `${ENV_VAR}` syntax for secret management.
+## Design principles
 
-### YAGNI & Feature Deferral (Live Reload)
-We explicitly decided **not** to implement live hot-reloading (`fsnotify` on `devtether.yaml`) in the Beta.
-- **Why:** The DevTether core design prioritizes stability and minimal moving parts. Live config swapping introduces massive concurrency challenges (e.g. atomically swapping out the router map while in-flight HTTP streams are actively using it, or dealing with half-written YAML saves).
-- **YAGNI Rationale:** For local development, typing `<Ctrl-C>` and `devtether up` takes ~400ms. Implementing a complex `inotify/kqueue` file-watcher with atomic pointer swaps inside the proxy hot-path is textbook overengineering. We will reconsider live-reloading *only* if user demand overwhelmingly proves that simple daemon restarts are an actual bottleneck to DX.
+1. Keep the current schema small and explicit.
+2. Keep future engine configuration isolated by top-level section.
+3. Reject unknown fields so documentation drift fails loudly.
+4. Do not add live config reload until there is a concrete need; current route changes require a restart.
 
 ## Consequences
 
-### Positive
-
-- Single file to manage, version control, and share.
-- Clear visual separation of concerns via top-level keys.
-- Familiar to anyone who has used Docker Compose, GitHub Actions, or similar YAML-configured tools.
-- Minimal valid config is extremely simple, reducing barrier to entry.
-
-### Negative
-
-- Large configs with all 4 engines active could become verbose. Mitigated by clear section headers and documentation.
-- YAML parsing errors in one section could prevent all engines from loading. Mitigated by per-section validation with clear error messages indicating which section failed.
+One configuration file remains easy to version while strict decoding protects the current binary from silently accepting stale documentation examples.

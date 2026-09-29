@@ -1,3 +1,5 @@
+> **Historical release audit:** This file records beta.7 audit snapshots. Its conclusions are not current implementation truth. Later source and documentation changes may supersede them; see the current repository documentation-consistency audit at `docs/workspace/portfolio-documentation-sync-audit.md`.
+
 # v2.0.0-beta.7 System Integration — Implementation Plan
 
 ## Pre-Flight Checklist

@@ -21,7 +21,7 @@ Please select the relevant options:
 ## 🧪 How Has This Been Tested?
 Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce. 
 - [ ] `go test -race ./...` (Mandatory for all PRs)
-- [ ] `./scripts/test.sh` (Highly recommended for Linux/macOS contributors)
+- [ ] `make test` (Highly recommended for Linux/macOS contributors)
 - [ ] Manual end-to-end testing (e.g. running `devtether up` locally)
 - [ ] Cross-platform compilation (`GOOS=darwin go build ...`)
 
@@ -35,9 +35,17 @@ Please describe the tests that you ran to verify your changes. Provide instructi
 
 - [ ] I have read and strictly followed the `docs/engineering-standards.md`.
 - [ ] I have read `docs/architecture.md` and the relevant `docs/adr/` records if making structural changes.
-- [ ] I have run `./scripts/test.sh` locally and it passes with **0 warnings and 0 errors** (including `golangci-lint` and `govulncheck`).
+- [ ] I have run `make test` locally and it passes with **0 warnings and 0 errors** (including `golangci-lint` and `govulncheck`).
+- [ ] **Mandatory Manual Testing**: I have verified my code manually and confirm there are zero unintended side-effects or out-of-scope changes.
 - [ ] My code introduces **no new `sync` package deadlocks or data races** (verified via `-race`).
 - [ ] I have added/updated unit tests that prove my fix is effective or that my feature works.
 - [ ] I have verified that errors are correctly wrapped via `fmt.Errorf("...: %w", err)` and not swallowed.
 - [ ] I have explicitly handled `context.Context` propagation where applicable.
 - [ ] I have updated the documentation accordingly (e.g., `README.md`, `docs/architecture.md`, `CHANGELOG.md`).
+
+## 🤖 AI Assistance & Liability
+*(Please see `docs/adr/010-ai-contribution-liability.md` for details)*
+
+**Please check EXACTLY ONE of the following:**
+- [ ] **No AI:** I did not use AI to generate this code.
+- [ ] **AI Assisted:** I used AI (e.g. AntiGravity, Copilot) to help write this code. As the human author, I assume 100% legal, functional, and security liability for this PR. I have deeply audited the generated code against the engineering standards and confirm it is zero-bloat, idiomatic Go.

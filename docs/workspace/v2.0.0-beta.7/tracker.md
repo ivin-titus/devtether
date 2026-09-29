@@ -95,7 +95,7 @@
 - [x] **[Bugfix] Consolidated Remediation — Audit & Hardening Fixes (Subphase 3.3)**
   *Assignee:* `@ivin-titus (via Codex: GPT 5.6 Terra)`
   *Priority:* Critical
-  *Status:* **Implemented and Verified**. All fixes are fully implemented and regression-tested. Direct code verification and test suite execution (Subphase 3.4 Part F) confirm the fixes are safe and active.
+  *Status:* **Implemented in source; regression verification recorded in the historical audit.** Current repository documentation is being reconciled separately.
   *Description:* Resolve all open audit findings (project-wide QA and second-opinion audit). Consolidates the former Subphase 3.2.1 and 3.2.2. Every fix requires a regression test; no finding is closed without one. Full step list in `implementation_plan.md` Subphase 3.3.
   *Scope:*
     - **Part 1 (init):** TTY via injected reader, setcap `/tmp` warning, quoted setcap hint.
@@ -116,12 +116,12 @@
   *Assignee:* `@ivin-titus (via Cline: GLM 5.3 Flash)`
   *Priority:* High
   *Blocked by:* Subphase 3.4
-  *Description:* Sync every permanent documentation surface with the resulting implementation: `docs/architecture.md` (init wizard, nonce-protected shutdown endpoint, re-verified startup sequence, corrected route-reload semantics), `README.md` (Commands table, Post-Install cross-references, bounded detached-log policy), `root.go` cheat-sheet, and `init` Cobra `Long` descriptions. Final consistency gate: record the ADR-008 streaming timeout exemption, the authorized watchdog exit, `fsnotify` dependency rationale, and the remaining Windows platform boundary; no ephemeral terminology or "production-ready" claims. (Formerly Subphase 3.3; renumbered to Subphase 3.4 when remediation became Subphase 3.3, and to Subphase 3.5 when Product & DX Polish took Subphase 3.4.)
+  *Description:* Historical beta.7 documentation synchronization pass. Its original scope included architecture/README/help synchronization and recording the ADR-008 streaming exemption, watchdog exception, fsnotify rationale, and Windows boundary. Current documentation must still be verified against the source tree; later repository audits may supersede this historical completion record.
 
-- [x] **[Feature] Phase 4 Polish (DNS Wizard & CLI Cleanups)**
+- [ ] **[Feature] Phase 4 Polish (DNS Wizard & CLI Cleanups)**
   *Assignee:* `@ivin-titus (via Cline: Deepseek v4.1 Flash)`
   *Priority:* High
-  *Status:* **Implemented — Awaiting Human Verification.** Code, regression tests, lint/vet/race gates, and documentation have landed. The checkbox stays open until the system owner completes the manual verification steps below (per `devtether-change` §6).
+  *Status:* **Implemented — Awaiting Human Verification.** The checkbox intentionally remains open until the system owner completes the manual verification steps below.
   *Description:* Enhance `devtether init` with a smart OS-aware DNS configuration wizard (`systemd-resolved`, `macOS resolver`, `dnsmasq`). Clean up Cobra CLI help generation by hiding the `completion` command and removing redundant manual command lists from `Long` descriptions. Expand `scripts/uninstall.sh` to remove generated DNS configs. Strictly enforce `.localhost` structure in config via regex to block wildcards and resolve QA-2. Resolve orphaned root sockets (QA-1) via `kill -0` liveness checks and proactive unlinking.
   *Delivered:*
     - `internal/cli/init.go`: `detectDNSProvider` + `applyDNSConfig` + a shared `runSudo` privileged-command helper (also used by `applySetcap`); the DNS prompt is interactive-only and skipped when no supported resolver is detected.
@@ -175,7 +175,7 @@
   *Delivered Tasks:*
     - **ADR-011**: Created ADR for `devtether init` automated setup flow and system OS mutations.
     - **ADR-001**: Amended to enforce a YAGNI zero-allocation `//go:embed` static asset strategy for any future GUI (preventing Electron bloat).
-    - **ADR-009**: Amended to formalize `throttleCache` eviction and OS Service Management (`service install`).
+    - **ADR-009**: Amended to formalize the current `throttleCache` eviction behavior. OS service management was retained as deferred/future work rather than a shipped beta feature.
     - **ADR-006**: Amended to document pure-Go CLI TTY / `golang.org/x/term` usage.
     - **ADR-002 & ADR-005**: Amended with strict YAGNI scope limitations (dropping `.internal`/custom TLDs and live config reloading).
     - **Architecture Updates**: Added Proxy Security (throttleCache), CLI Daemon Interactivity (`logs -f`), OS Integration, and Daemon Liveness Polling (`flock`) to `architecture.md`.

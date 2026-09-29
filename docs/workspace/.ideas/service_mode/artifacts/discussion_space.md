@@ -1,3 +1,5 @@
+**Historical / superseded artifact:** This discussion records an earlier service-mode design. Service installation is currently deferred and is not part of the current develop implementation.
+
 # Service Mode & System Integration - Discussion Space
 *(This document preserves historical architectural discussions for the deferred OS Service and daemonization features.)*
 

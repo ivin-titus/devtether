@@ -1,49 +1,64 @@
 # ADR-002: DNS Design — Non-Recursive, Loopback-Only
 
-**Status:** Accepted
-**Date:** 2026-05-30
+**Status:** Accepted  
+**Date:** 2026-05-30  
+**Reconciled:** 2026-09-28
 
 ## Context
 
-DevTether embeds a DNS server (`miekg/dns`) to resolve the `.localhost` TLD (and eventually `.internal` for Engine 3) to the developer's machine. This eliminates the need for manual `/etc/hosts` editing.
+DevTether embeds a DNS server so local HTTP routes can use named `.localhost` domains without editing `/etc/hosts`.
 
-However, running a DNS server introduces significant security risks:
-
-1. **Open resolver abuse** — If DevTether forwards unmatched queries upstream, it becomes an open DNS resolver that can be exploited for DNS amplification attacks.
-2. **Network exposure** — Binding to `0.0.0.0:53` (the original default) exposes the DNS server to every device on the network, even when the developer only intends to use DevTether locally.
-3. **Per-query overhead** — The original implementation called `net.Dial("udp", "8.8.8.8:80")` on every DNS query to determine the local IP, adding unnecessary syscall overhead.
+A DNS listener must not become an open resolver or accidentally expose local development services to other devices.
 
 ## Decision
 
-1. **Non-recursive by design** — DevTether will **never** forward DNS queries to upstream resolvers. It only answers queries for the `.localhost` TLD. All other queries receive `NXDOMAIN`. This is a permanent, non-negotiable design decision.
-2. **Loopback-only by default** — DNS binds to `127.0.0.1:5335` by default to remain completely unprivileged and avoid mDNS port conflicts (`5353`). It only binds to `0.0.0.0:53` when `--lan` mode is explicitly enabled with sudo.
-3. **Fail-Fast Predictability** — We eliminated the legacy behavior of silently falling back to unprivileged ports if port 53 was occupied. The daemon now strictly binds to the port specified in `devtether.yaml` (defaulting to 5335) and crashes cleanly if it cannot.
-4. **Cached LAN IP** — The local IP is resolved once on startup and cached. It is refreshed only on detected network changes (interface up/down events), not per-query.
+### 1. Non-recursive
+
+DevTether never forwards unmatched DNS queries to an upstream resolver. It only answers for managed `.localhost` routes.
+
+### 2. Safe default bind
+
+The current default is:
+
+```text
+127.0.0.1:5335
+```
+
+This keeps the current Engine 1 DNS listener local and unprivileged.
+
+Port 53 is supported only as an explicit configuration when the host provides the required privileges. Earlier 53-default and 5353-fallback behavior is historical, not current.
+
+### 3. Route-aware response contract
+
+The response depends on route existence and query type:
+
+| Route exists? | Query type | Response |
+|---|---|---|
+| No | Any | NXDOMAIN |
+| Yes | A | A = 127.0.0.1 |
+| Yes | Unsupported type, such as AAAA/HTTPS | NOERROR with zero answers (NODATA) |
+
+The current route must therefore be distinguished from an unsupported record type.
+
+### 4. Host integration
+
+`devtether init` may configure supported Linux/macOS resolver integrations with explicit user consent. It writes the exact configured DNS port into the generated resolver configuration.
+
+If `dns.bind` is changed manually, the host resolver must be updated to match.
+
+### 5. TLD scope
+
+The current engine hardcodes `.localhost`.
+
+`.internal` and arbitrary/custom TLD configuration are **not supported in the current beta**. A future Engine 3 implementation may define a separate sharing namespace, but that is a future architectural decision.
 
 ## Consequences
 
-### Positive
+- The current resolver stays local and non-recursive.
+- Unmanaged DNS names are rejected rather than forwarded.
+- Dual-stack clients can query unsupported types without the hostname being treated as nonexistent.
+- OS resolver integration remains explicit and auditable.
 
-- Eliminates the entire class of DNS amplification and open resolver vulnerabilities.
-- Default configuration is safe — a developer who just runs `devtether up` cannot accidentally expose their DNS to the network.
-- Reduced per-query latency by eliminating the UDP dial overhead.
+## Historical note
 
-### Negative
-
-- Developers must configure their OS resolver (e.g., `systemd-resolved`) to forward specific TLDs to `127.0.0.1:5335`. This is a one-time setup step documented in the README and automated via `devtether init`.
-- In LAN mode, the DNS server is exposed to the local network, which is a deliberate and accepted tradeoff for the LAN sharing feature.
-
-### YAGNI & Scope Limitation (Custom TLDs)
-Early architectural drafts included support for `.internal` or completely customizable TLD arrays. We have explicitly dropped this in favor of hardcoding `.localhost`.
-- **Why:** Supporting arbitrary TLDs significantly increases the complexity of OS integration (e.g., conflicting with mDNS `.local` or breaking corporate `.internal` resolutions) and creates a massive testing matrix across macOS and Linux resolvers.
-- **YAGNI Rationale:** We adhere strictly to the "Lazy Senior Dev" mindset. Hardcoding `.localhost` solves 99% of local development routing needs perfectly. Building complex customizable TLD injection is overengineering a problem our users don't actually have yet. We will reconsider this *only* if concrete user demand arises.
-
-## Amendment 
-**Date:** 2026-09-07
-
-The following constraints are added to fortify the DNS engine's stability and dual-stack compliance:
-1. **Panic Recovery in Network Boundaries:** Because `miekg/dns` spawns a new goroutine for every incoming UDP query, any unrecovered panic in the handler acts as a trivial Denial of Service (DoS) attack, crashing the entire DevTether daemon. Therefore, **any goroutine handling DNS queries MUST wrap its logic in a `defer recover()` block.** Furthermore, any locks acquired must be released via an immediate `defer mu.Unlock()` pairing to prevent the recovery from abandoning shared state.
-2. **Strict Dual-Stack Coupling:** The current loopback isolation explicitly relies on answering *only* `A` records (IPv4). If `AAAA` (IPv6) support is ever added to the DNS engine, both the DNS Server and Reverse Proxy MUST explicitly bind to `[::1]` (IPv6 loopback) in the exact same change to prevent connection-refused errors for IPv6-preferring clients.
-3. **RFC 4074 Dual-Stack Compliance (NXDOMAIN vs NODATA):** The original design mandated `NXDOMAIN` for anything DevTether couldn't answer. This was architecturally flawed. Because modern OS resolvers issue `A` and `AAAA` queries in parallel, returning an authoritative `NXDOMAIN` for a configured route's `AAAA` query will poison the OS cache, randomly causing the valid `A` record lookup to fail. Therefore, the DNS engine MUST decouple route existence from record generation:
-   - If the route does *not* exist in the routing table -> Return `NXDOMAIN`.
-   - If the route *does* exist, but the query type is unsupported (e.g., `AAAA` or `HTTPS`) -> Return `NOERROR` with 0 answers (NODATA).
+Earlier revisions used port 53 as the default and experimented with fallback behavior. Those contracts are superseded by the current 5335 fail-fast design.

@@ -1,7 +1,7 @@
 # DevTether Engineering Standards
 
 This document defines the code quality standards that **all contributions** must
-follow. These are not suggestions — they are enforced by CI and local tooling.
+follow. These are mandatory project standards. Some are enforced automatically by CI/local tooling; others require human review and architectural judgment.
 
 Read this before writing your first line of code.
 
@@ -9,7 +9,7 @@ Read this before writing your first line of code.
 
 ## Core Principles
 
-### 1. Match Production-Grade Go Quality
+### 1. Match High-Quality Go Infrastructure Practices
 
 The codebase follows patterns found in resilient Go infrastructure (Kubernetes,
 etcd, CoreDNS): clean interfaces, explicit error handling, `errgroup`-based
@@ -161,7 +161,7 @@ To maintain strict Separation of Concerns and reduce cognitive overload, all log
 
 - `[dns]`: Emitted strictly by `internal/dns` (DNS Server boot and fallback tracing).
 - `[proxy]`: Emitted strictly by `internal/proxy` (HTTP Reverse Proxy core, including raw `dial tcp` traces).
-- `[access]`: Emitted by the logging middleware inside the proxy (Standardized traffic visibility).
+- `[access]`: Reserved for the future access-control/traffic layer; it is not a current beta namespace.
 - `[daemon]`: Emitted by `internal/daemon` (IPC Unix socket server).
 - `[route]`: Emitted by `internal/router` and the `up.go` health checker (Global routing state changes).
 - `[devtether]`: Top-level CLI orchestration logs.
@@ -170,12 +170,12 @@ Never cross these boundaries (e.g., the `router` package should never emit a `[p
 
 ## 7. Test Coverage Strategy
 
-While 100% coverage is the long-term goal, current test coverage prioritizes core business logic (`config`, `dns`, `router`). Some infrastructural packages are currently untested by design, pending architectural refactors:
+Test coverage is uneven; packages should not be described as untested when tests already exist.
 
-- **`internal/cli`**: Refactored during the core engine rewrite to use `RunE` and return errors instead of `log.Fatalf`. Now fully ready for comprehensive CLI unit tests.
-- **`internal/proxy`**: Requires setting up mock backend HTTP servers (`httptest.Server`) to assert on headers (like `X-Forwarded-For`). **Strategy:** Add integration-style tests in a future stage.
-- **`internal/daemon`**: Manages OS-level IPC (Unix domain sockets) which introduces cross-platform flakiness. **Strategy:** Isolate platform-specific dialing logic before testing.
-- **`internal/netutil`**: Contains minimal wrapper logic (`errors.As`). Scheduled for comprehensive test coverage in upcoming cycles.
+- **`internal/cli`**: Focused command/helper tests exist; broader end-to-end CLI coverage remains useful.
+- **`internal/proxy`**: Core behavior is covered, but broader `httptest.Server` integration tests remain useful.
+- **`internal/daemon`**: Lifecycle/state tests exist; additional OS-specific edge coverage can still be added.
+- **`internal/netutil`**: Unit tests exist; expand coverage as normalization behavior grows.
 
 ---
 
@@ -275,14 +275,13 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 Before pushing any branch:
 
 ```bash
-# Run the full local QA suite (mirrors CI)
-./scripts/test.sh
+# Run the local QA suite
+make test
 ```
 
-This script runs: module verification → linting → vet → security scanning →
-unit tests with race detection → cross-compilation check → build.
+This script runs a local QA sequence: module verification → available local lint/security tools → vet → race-enabled tests → cross-compilation check → build.
 
-**If `scripts/test.sh` passes locally, CI will pass.**
+CI remains authoritative and also installs its own security tooling and runs the test suite on both Ubuntu and macOS.
 
 ---
 

@@ -14,14 +14,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - **Configuration Scaffolding:** Added a `settings:` top-level block to `devtether.yaml` for customizing the log path, background daemon behavior, and verbosity.
 - **Active Diagnostics:** Added `devtether doctor` to actively scan for port 80 conflicts, missing Linux `setcap` capabilities, stale UNIX sockets, and DNS resolution integrity.
 - **Lifecycle Commands:** Added `devtether status` to fetch uptime, route count, and heap allocation, alongside `devtether down` for robust IPC daemon termination.
-- **Architectural Documentation:** Created `ADR-011` (Init Wizard & System Mutations) and `ADR-012` (Static Asset `//go:embed` GUI strategy), meticulously syncing the ADR folder with the shipped implementation.
+- **Architectural Documentation:** Created `ADR-011` (Init Wizard & System Mutations). The future static-asset/GUI strategy is documented in ADR-001; the ADR index contains only documents present in the repository.
 
 ### Changed
 - **Strict Fail-Fast DNS Architecture:** Enforced deterministic `127.0.0.1:5335` unprivileged loopback bindings by default. Port bind failures are now immediately fatal to the process, guaranteeing network determinism.
 - **Configuration Strictness:** Hardened `.localhost` domain validation via strict regex parsing, explicitly rejecting wildcards and unsupported TLD configurations during startup.
 - **UI/UX Consistency:** Cleaned up Cobra CLI help texts by suppressing default `completion` commands, removing duplicated manual lists, and dynamically adjusting `setcap` instructions based on macOS vs. Linux.
-- **Documentation Integrity:** Purged all codebase AI fluff, contradictory comments, ephemeral sprint-tracking tags, and false "Production-ready" claims to respect strict Beta transparency.
-- **Daemon Liveness Polling:** Upgraded `devtether down` to explicitly poll the lockfile via `daemon.WaitForExit()`, ensuring the CLI exactly tracks daemon termination (5ms when idle, up to 5s when proxy is active).
+- **Documentation Integrity:** Reworked stale comments and claims, removed unsupported production-status wording, and tightened current-vs-future terminology for beta transparency.
+- **Daemon Liveness Polling:** Upgraded `devtether down` to wait for lockfile release via `daemon.WaitForExit()`; the current lock probe interval is 500ms and graceful shutdown may wait for active connection draining.
 
 ### Removed
 - **Silent DNS Fallback:** Removed the `:0` and `5353` fallback logic in the DNS server to enforce the strict fail-fast architecture.

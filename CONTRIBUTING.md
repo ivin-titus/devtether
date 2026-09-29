@@ -16,6 +16,14 @@ This document defines the quality bar for all contributions — DRY, SoC, error
 handling, testing, security, naming, and more. CI enforces these rules
 automatically, so save yourself a round-trip and read them first.
 
+### 📦 Third-Party Dependencies (Zero Bloat)
+DevTether follows a strict "Standard Library First" philosophy to keep the binary small and secure. Every new third-party dependency significantly increases the audit surface area. 
+- **Do not introduce new external dependencies** without a strong architectural justification in your PR. 
+- Whenever possible, write idiomatic Go using standard library alternatives.
+
+### 🔐 Secrets Handling
+**Never commit secrets, API keys, or sensitive configuration data.** Always rely on local `.env` files or Git-ignored configurations when testing locally.
+
 ## AI Assistance & Liability
 
 We welcome contributions generated with the help of AI agents (e.g., Google AntiGravity, GitHub Copilot). However, you must adhere to our strict Human Accountability Policy (see [ADR-010](docs/adr/010-ai-contribution-liability.md)):
@@ -27,6 +35,8 @@ We welcome contributions generated with the help of AI agents (e.g., Google Anti
 ## How to Contribute
 
 ### 🐛 Reporting Bugs
+
+> **SECURITY:** If you have found a security vulnerability, **DO NOT** open a public issue. Please follow the instructions in our [Security Policy](SECURITY.md) to report it privately.
 
 Before creating a bug report, check existing issues. When filing:
 
@@ -63,11 +73,16 @@ cd devtether
 # 2. Install dependencies
 go mod tidy
 
-# 3. Run the daemon
+# 3. Create a starter configuration
+go run ./cmd/devtether init
+
+# 4. Add at least one route to devtether.yaml
+
+# 5. Run the daemon
 go run ./cmd/devtether up
 
-# 4. Verify everything works
-./scripts/test.sh
+# 6. Verify everything works
+make test
 ```
 
 **Requirements:**
@@ -81,11 +96,11 @@ go run ./cmd/devtether up
 #### Before You Push
 
 ```bash
-# Run the full local QA suite — mirrors CI exactly
-./scripts/test.sh
+# Run the local QA suite
+make test
 ```
 
-**If `scripts/test.sh` passes locally, CI will pass.** This script runs:
+The script covers the core QA categories but may skip optional tools that are not installed locally and runs on your current OS. CI remains authoritative and tests both Linux and macOS. The script runs:
 
 1. Module integrity verification (`go mod verify`)
 2. Module hygiene check (`go mod tidy` drift detection)
@@ -98,11 +113,12 @@ go run ./cmd/devtether up
 
 #### Pull Request Process
 
-1. **Fork the repo** and create your branch from `develop`
+1. **Fork the repo** and create your branch from `develop`. *(Note: `develop` is our active integration branch. `main` is strictly reserved for stable releases. Do not PR against `main`.)*
 2. **Write tests** — all new code must have tests, bug fixes must include regression tests
 3. **Update docs** if you changed CLI flags, behavior, or architecture
-4. **Run `scripts/test.sh`** and make sure it passes
-5. **Open the PR** with a descriptive title following Conventional Commits
+4. **Run `make test`** and make sure it passes
+5. **Mandatory Manual Testing** — Passing `make test` is **not** enough. You must manually verify that your code works exactly as intended in a real environment and that you have not accidentally touched or broken unrelated, out-of-scope components.
+6. **Open the PR** with a descriptive title following Conventional Commits
 
 #### Branch Naming
 

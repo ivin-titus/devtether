@@ -1,227 +1,259 @@
-# PRD — DevTether: The Local Development Networking Protocol
+# PRD — DevTether: Local Development Networking Toolkit
 
-> *Version 2.0 — Revised 2026-05-30*
->
-> *"The missing networking layer for local development."*
+> *Version 2.1 — Revised 2026-09-28*
 
 ---
 
 ## 1. Overview
 
-**DevTether** is a modular, self-hosted developer networking toolkit that replaces the fragmented mess of port memorization, reverse proxy configs, ngrok subscriptions, and ad-hoc LAN sharing scripts with a single, lightweight Go binary.
+DevTether is a self-hosted local development networking toolkit written in Go. Its current beta focuses on one problem: making multiple already-running local HTTP services easier to address without memorizing ports.
 
-Where Docker networking solves container-to-container communication, DevTether solves **developer-to-developer** and **developer-to-service** communication on bare metal. It is the networking layer that should have existed between `localhost` and production.
-
-DevTether is built around **4 independent engines** that coexist inside one binary. Developers opt-in to the engines they need — they never pay cognitive load for features they don't use.
+The current release provides named `.localhost` routing through embedded DNS and a loopback-only HTTP reverse proxy. The longer-term product direction is a four-engine platform that can add process orchestration, LAN/WAN sharing, and access control without making those concerns mandatory for users who only need local routing.
 
 ---
 
-## 2. Goals
+## 2. Product Goals
 
-### Primary Goals
+### Current beta goals
 
-1. **Eliminate port memorization** — Replace `localhost:PORT` with clean named domains (e.g., `web.localhost`).
-2. **Zero-config static routing** — Map existing services running on fixed ports to named domains with one command.
-3. **Optional process orchestration** — For microservice-heavy setups, auto-allocate ports and manage process lifecycles.
-4. **Self-hosted environment sharing** — Enable LAN sharing (same WiFi/VPN) and WAN tunneling (self-hosted relay) without third-party SaaS.
-5. **Access control** — Provide token-based RBAC so developers can control who accesses which services.
-6. **Security by default** — Every feature that expands the attack surface requires explicit opt-in.
+1. Replace `localhost:PORT` with named `.localhost` domains for existing HTTP services.
+2. Keep the routing layer small, predictable, and secure by default.
+3. Provide a single Go binary with no external runtime services.
+4. Make DNS setup and daemon lifecycle understandable through the CLI.
+
+### Future goals
+
+5. Optionally manage application processes and dynamically allocate ports.
+6. Optionally share development services over a LAN or self-hosted WAN relay.
+7. Add scoped access control for shared services.
+8. Preserve explicit opt-in for features that expand the attack surface.
 
 ### Non-Goals
 
 - Replace Kubernetes or Docker Compose for production orchestration.
-- Act as a production reverse proxy (Nginx, Caddy, Traefik).
-- Provide full identity management or SSO (future evolution, not MVP).
+- Act as a production reverse proxy.
+- Provide generic TCP/database proxying in the current networking engine.
+- Provide full identity management or SSO.
 - Manage containers or VMs.
 
 ---
 
 ## 3. Target Users
 
-### Primary
+### Current beta
 
-- **Solo developers** running 2–5 local services who are tired of port numbers.
-- **Small team leads** at startups who want teammates to access their local backend without Ngrok.
-- **DevOps engineers** looking for a lightweight, self-hosted alternative to tunnel SaaS.
+- Solo developers running multiple local HTTP services.
+- Open-source contributors who want readable local domains.
+- Students and developers building multi-service projects.
 
-### Secondary
+### Future expansion
 
-- **Open-source contributors** who need a fast way to spin up multi-service dev environments.
-- **Students** building microservice projects who want portfolio-worthy infrastructure.
-- **Enterprise dev teams** (mid-scale) who need access-controlled environment sharing on corporate VPNs.
-
-### Typical Stacks
-
-- Next.js, Vite, Nuxt, Astro (frontend)
-- FastAPI, Django, Express, Go APIs (backend)
-- PostgreSQL, Redis, Elasticsearch (databases — static port routing)
+- Small teams that need controlled LAN access to local services.
+- DevOps engineers evaluating self-hosted development tunnels.
+- Teams that want process orchestration and scoped sharing from one tool.
 
 ---
 
 ## 4. Core Problem
 
-### The Port Problem
+Without a local routing layer, a project can quickly become a collection of ports:
 
 ```text
-frontend   → localhost:3000
-backend    → localhost:8000
-admin      → localhost:8080
-monitor    → localhost:3001
-worker     → localhost:3223
-db         → localhost:8042
+frontend → localhost:3000
+backend  → localhost:8000
+admin    → localhost:8080
+monitor  → localhost:3001
 ```
 
-Developers must constantly remember these mappings. Port conflicts (`EADDRINUSE`) derail flow state. Sharing with teammates requires Ngrok subscriptions or manual IP+port sharing.
-
-### The Solution
+The current product addresses the naming problem without taking ownership of how those applications are started.
 
 ```text
-frontend   → web.localhost
-backend    → api.localhost
-admin      → admin.localhost
-monitor    → monitor.localhost
-worker     → worker.localhost
-db         → db.worker.localhost
+frontend → web.localhost
+backend  → api.localhost
+admin    → admin.localhost
+monitor  → monitor.localhost
 ```
 
-One YAML file. One binary. One command: `devtether up`.
+The current beta uses a static `devtether.yaml` route table and requires a daemon restart after route changes.
 
 ---
 
-## 5. The Three-Layer Architecture
+## 5. Current Beta Scope — Engine 1
 
-DevTether is conceptually built around three independent layers that coexist inside one binary *(internally powered by 4 highly modular engines — see [ADR-001](adr/001-modular-engine-architecture.md))*. Developers opt-in to the layers they need — they never pay cognitive load for features they don't use.
+### Static routing
 
-### Layer 1: The Networking Layer
-**The zero-friction entry point.** Handles all traffic, routing, and local network topologies.
-- **Static Routing:** Maps pre-existing services on fixed ports to named `.localhost` domains.
-- **Fallback Port Binding:** Dynamically falls back to alternate ports (e.g., `8080`) if the default `80` port is occupied, preventing startup failures.
-- **Traffic Inspection:** Buffers network payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays in the GUI.
-- **Smart Routing-Based CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `web.localhost` to `api.web.localhost`) while safely managing project boundaries.
-- **Rich Error Pages:** Serves ultra-lightweight Cloudflare-style HTML error pages if a backend is down, functioning perfectly even if the GUI process is offline.
+Maps a named `.localhost` host to an already-running local HTTP service:
 
-### Layer 2: The Process Orchestrator Layer
-**The process orchestration layer.** Manages the lifecycle of developer applications (Node, Go, Python).
-- **Process Groups:** Orchestrates apps into isolated Process Groups (PGIDs) for clean shutdown (`devtether stop <group>`).
-- **Dynamic Ports:** Allocates ephemeral `$PORT` environment variables.
-- **Unified Logging:** Captures stdout/stderr and prefixes them (e.g., `[app | api]`) to clearly separate them from network access logs (`[proxy | web]`).
+```yaml
+routes:
+  web.localhost: 3222
+  api.localhost: 8042
+```
 
-### Layer 3: The Access Controls Layer
-**The collaboration enabler.** Secures cross-network and cross-org collaboration.
-- **Centralized RBAC & IAM:** A self-hosted identity layer controlling who can access which local services when exposed over LAN (mDNS) or WAN (relay tunnels).
-- **Tokens & Groups:** Ensures that a frontend teammate can access the `api` service, but not the local `admin` database. WAN tunnels force RBAC on by default.
+### Embedded DNS
 
----
+- Default bind: `127.0.0.1:5335`.
+- Route-aware: only configured routes receive an address.
+- A records for configured routes resolve to `127.0.0.1`.
+- Unsupported qtypes for an existing route return NODATA.
+- Unknown routes return NXDOMAIN.
+- No upstream DNS forwarding.
 
-## 6. Competitive Landscape
+### HTTP reverse proxy
 
-| Tool | What it does | Gap we fill |
-|------|-------------|-------------|
-| **Ecosystem Tools (e.g. Portless)** | Named `.localhost`, dynamic ports, monorepo support | No static routing. No tunneling. No RBAC. Node.js only. |
-| **frp** | TCP/UDP reverse proxy and tunneling | Complex config. Not dev-focused. No DNS. |
-| **Ngrok** | Instant public tunnels | SaaS with strict limits. Not self-hosted. |
-| **Caddy / Nginx** | Production reverse proxying | Manual config. No DNS. No process awareness. |
-| **Cloudflare Tunnel** | Secure outbound tunneling + Zero Trust | Vendor lock-in. Complex ACL setup. |
+- Default configured bind: `127.0.0.1:80`.
+- On permission/address-in-use failure, beta.7 falls back to `127.0.0.1:8080`.
+- There is no OS-assigned `:0` fallback.
+- Backend targets are loopback-only.
+- Host validation is strict.
+- WebSocket and streaming-style connections are supported without fixed request read/write deadlines.
 
-**Our unique position:** No single tool combines local DNS + reverse proxy + process orchestration + self-hosted tunneling + RBAC into one developer-first binary.
+### Daemon and CLI
 
----
+Current commands:
 
-## 7. Technology Stack
+- `init`
+- `up` / `start`
+- `down` / `stop`
+- `status`
+- `routes`
+- `logs`
+- `doctor`
+- `version`
 
-**Language:** Go
+The daemon uses a Unix-socket IPC API, instance locking, PID and nonce state, and graceful shutdown.
 
-**Rationale:**
-- Single static binary — zero runtime dependencies (no Node.js, no Python)
-- Excellent networking primitives (`net/http`, `net`, `crypto/tls`)
-- Native concurrency (`goroutines`, `errgroup`)
-- Currently focusing on UNIX-based systems (Linux, macOS). Native Windows support (without WSL) will be prioritized in future releases.
+### Current setup integration
 
-**Key Dependencies:**
-
-| Package | Purpose |
-|---------|---------|
-| `miekg/dns` | Embedded DNS resolver |
-| `spf13/cobra` | CLI framework |
-| `gopkg.in/yaml.v3` | YAML config parsing |
-| `golang.org/x/sync/errgroup` | Concurrent server lifecycle |
-| `gorilla/websocket` | Tunnel WebSocket transport (Future) |
-| `golang.org/x/crypto/acme` | Let's Encrypt on relay (Future) |
+`devtether init` can generate the current config and, with explicit consent, configure supported Linux/macOS DNS resolver integrations. The default DNS port is always `5335`; changing it manually requires aligning the host resolver configuration.
 
 ---
 
-## 8. Performance Targets
+## 6. Target Architecture
+
+DevTether is designed around four independent engines.
+
+### Engine 1 — Local Static Routing
+
+Current:
+- static route table;
+- embedded DNS;
+- HTTP reverse proxy;
+- daemon/IPC lifecycle.
+
+### Engine 2 — Orchestration
+
+Planned:
+- process groups;
+- lifecycle supervision;
+- dynamic `$PORT` allocation;
+- unified process logging.
+
+### Engine 3 — Tunneling
+
+Planned:
+- LAN sharing;
+- self-hosted WAN relay;
+- optional separate `devtether-relay` binary.
+
+### Engine 4 — Access Control
+
+Planned:
+- scoped service tokens;
+- RBAC;
+- access policy enforcement for shared services.
+
+The current beta does not activate the future engines through configuration; unsupported future sections are rejected.
+
+---
+
+## 7. Competitive Position
+
+DevTether's current scope is intentionally narrower than its long-term architecture. The beta is primarily a local static routing tool rather than an all-in-one tunnel/orchestration platform.
+
+The longer-term architecture is designed to combine local DNS, HTTP routing, process awareness, self-hosted sharing, and access control without requiring all of those features for local-only use.
+
+---
+
+## 8. Technology
+
+### Current
+
+- Go 1.27.1+
+- `miekg/dns`
+- `spf13/cobra`
+- `gopkg.in/yaml.v3`
+- `golang.org/x/sync/errgroup`
+- `golang.org/x/term`
+- `github.com/fsnotify/fsnotify`
+
+The release build uses `CGO_ENABLED=0`.
+
+### Future
+
+The final dependency set for tunneling, orchestration, and access-control engines has not been committed. Future dependencies must follow ADR-006 and the engineering standards.
+
+---
+
+## 9. Performance Targets
+
+These are engineering targets, not guarantees for every workload.
 
 | Metric | Target |
-|--------|--------|
-| Memory | < 15 MB idle, < 50 MB under load |
-| CPU | Near idle (event-driven, not polling) |
-| Binary size | < 20 MB |
-| Proxy latency | < 1ms added per request |
-| DNS response | < 0.5ms for cached queries |
+|---|---|
+| Idle memory | < 15 MB |
+| Loaded memory | < 50 MB |
+| Added proxy latency | ~1 ms or less |
+| Cached DNS response | sub-millisecond target |
+
+Binary size and resource usage may vary by platform and release configuration.
 
 ---
 
-## 9. Security Model
+## 10. Security Model
 
-**Guiding principle:** Secure by default, permissive by opt-in.
+### Current beta surfaces
 
-See [ADR-003: Security Model](adr/003-security-model.md) for the complete threat model covering 6 attack surfaces:
+1. IPC socket — owner-only permissions, instance locking, and authenticated shutdown.
+2. DNS engine — loopback-only, route-aware, non-recursive.
+3. Reverse proxy — strict host validation, loopback targets, bounded header-wait/idle behavior.
+4. Configuration — strict YAML fields and route validation.
 
-1. IPC Socket — `0600` permissions, XDG_RUNTIME_DIR, session nonce auth
-2. DNS Engine — Loopback-only by default, strict TLD filtering, no upstream forwarding
-3. Reverse Proxy — Host validation, loopback-only targets, connection timeouts, header sanitization
-4. Process Orchestrator — YAML-only commands, selective env passing, `no_new_privs`
-5. WAN Tunnel — mTLS, scoped registration tokens, RBAC forced-on
-6. Configuration — Env var interpolation, secret pattern warnings, file permission checks
+### Future surfaces
 
----
-
-## 10. Success Metrics
-
-| Metric | Target |
-|--------|--------|
-| GitHub stars (6 months) | 500+ |
-| Setup time for new user | < 2 minutes |
-| Zero-config static routing | Works on first try |
-| Graceful shutdown | < 2 seconds, zero orphan processes |
-| Security audit | Zero critical vulnerabilities in default config |
+Orchestration, LAN/WAN sharing, relay transport, RBAC, and a future GUI each receive additional threat modeling before implementation. See [ADR-003](adr/003-security-model.md) and [ADR-009](adr/009-proxy-security-lessons.md).
 
 ---
 
-## 11. Implementation Roadmap
+## 11. Roadmap
 
-| Stage | Name | Deliverable |
-|-------|------|-------------|
-| **1** | **Core Networking Engine** | Local proxy, DNS embedded resolver, static routing via `devtether.yaml` |
-| **2** | **Orchestration & IPC** | Unix socket daemon, dynamic CLI commands (`devtether link`) |
-| **3** | **LAN Sharing** | Bind to `0.0.0.0`, simple token auth, Web UI dashboard |
-| **4** | **WAN Tunnels** | Public URL routing via cloud relay, Let's Encrypt integration |
-| **5** | **Zero Trust** | Cloudflare Access integration, strict RBAC, Audit Logs |
+| Engine | Current status | Next architectural area |
+|---|---|---|
+| Engine 1 | ✅ Beta | Stabilization and incremental DX improvements |
+| Engine 2 | 🔲 Planned | Process orchestration |
+| Engine 3 | 🔲 Planned | LAN/WAN tunneling |
+| Engine 4 | 🔲 Planned | Access control |
 
-Detailed task breakdowns are tracked per-stage in the project's issue tracker.
-
----
-
-## 12. Project Status
-
-| Component | Status |
-|-----------|--------|
-| DNS Engine | ✅ Implemented (loopback-only, route-aware, port fallback) |
-| Reverse Proxy | ✅ Implemented (graceful shutdown, timeouts, host validation) |
-| Routing Engine | ✅ Implemented (thread-safe, static routing) |
-| Config Loader | ✅ Implemented (validation, defaults, legacy detection) |
-| IPC Daemon | ✅ Implemented (XDG socket, 0600 permissions) |
-| CLI (Cobra) | ✅ Implemented (`up`, `routes` commands) |
-| Layer 1: Core Networking | ✅ Implemented (Local Static Routing Complete) |
-| Layer 2: Orchestration | 🔲 Planned |
-| Layer 3: Access Control (LAN/WAN + RBAC) | 🔲 Planned |
-
-**Legend:** ✅ Implemented | 🔲 Planned
+Dynamic route reloading, a Web GUI, traffic inspection, and on-demand health checks remain separate future proposals and are not part of the current beta.
 
 ---
 
-*This PRD is a living document. It will be updated as the project evolves through its implementation roadmap.*---
+## 12. Success Measures
 
+For the current beta, useful signals include:
 
+- successful first-run setup;
+- reliable `.localhost` routing;
+- predictable daemon lifecycle;
+- clear failure messages;
+- no critical vulnerabilities in the default local-only configuration.
 
+Numeric adoption targets may be tracked separately as product goals; they are not implementation requirements.
+
+---
+
+## 13. Project Status
+
+The current beta delivers Engine 1. Future engines are documented here so their boundaries are explicit before implementation begins.
+
+*This PRD is a living product document. Current behavior should be verified against the source and tests; target architecture should not be read as shipped capability.*

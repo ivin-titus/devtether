@@ -3,9 +3,9 @@
 ## Discussion: `logs -f` Battery Drain
 
 **Date:** 09/19/2026
-**Context:** During the Subphase 4.6 Architectural Check, the `devtether-audit` agent flagged that the detached `logs -f` command uses a `50ms` loop to poll the internal `flock` lock file. This polling wakes the CPU 20 times a second, which drains battery and violates the "Lazy Senior Dev" anti-polling standard.
+**Context:** During the Subphase 4.6 Architectural Check, the `devtether-audit` agent flagged that the detached `logs -f` command used a `50ms` loop to poll the internal `flock` lock file. This polling wakes the CPU 20 times a second, which drains battery and violates the "Lazy Senior Dev" anti-polling standard.
 
-**Decision:** We temporarily opted for the simplest fix (YAGNI): backing off the polling interval from `50ms` to `500ms`. Since exiting a log tail isn't latency-critical, a 500ms delay is perfectly acceptable and drops CPU wakes drastically with zero added code complexity.
+**Decision:** We temporarily opted for the simplest fix (YAGNI): backing off the polling interval from `50ms` to `500ms`; the current implementation uses `500ms`. Since exiting a log tail isn't latency-critical, a 500ms delay is perfectly acceptable and drops CPU wakes drastically with zero added code complexity.
 
 However, the ideal, mathematically zero-polling approach requires an event-driven mechanism. This document preserves the architectural design for that future implementation.
 
@@ -24,4 +24,4 @@ Instead, we can exploit the fact that the DevTether daemon deletes its `.pid` fi
 5. At this point, we can trigger the `flock` check (which is non-blocking) to definitively confirm the lock is released.
 6. Cancel the context and cleanly exit the `logs -f` tail.
 
-This completely eliminates all `time.Sleep` loops from the `logs -f` lifecycle, making the entire CLI experience 100% event-driven and strictly zero-polling.
+This remains a future design. The current implementation still uses `WaitForExit` lock polling at 500ms.

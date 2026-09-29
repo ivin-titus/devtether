@@ -1,143 +1,172 @@
 # <img src=".assets/devtether_logo.png" height="48" align="center" alt="DevTether Logo" /> DevTether
 
-> **Single binary. Named domains. Zero hassle.**
+> **Single binary. Named domains. Minimal setup.**
 
-DevTether is a modular, self-hosted developer networking toolkit for macOS and Linux. It replaces port memorization, reverse proxy configs, and ngrok subscriptions with clean, named `.localhost` domains—all from a single, lightweight Go binary.
-
-```text
-Before:                          After:
-localhost:3222        👉         web.localhost
-localhost:3223        👉         api.localhost
-localhost:8042        👉         db.localhost
-```
+DevTether is a self-hosted local development networking toolkit written in Go. It maps existing local HTTP services to named `.localhost` domains through embedded DNS and a lightweight reverse proxy, with a CLI daemon for managing the local runtime.
 
 > [!WARNING]
 > **Project Status: Beta**  
-> DevTether is currently in Beta. Engine 1 (Static Routing) is complete - its configuration schema, CLI API, and core architecture are stable. Breaking changes to these will only occur with strong consensus and will be logged in the [CHANGELOG](CHANGELOG.md).
-
----
+> v2.0.0-beta.7 currently ships **Engine 1: Local Static Routing**. The remaining engines and sharing features are planned and are not part of the current beta.
 
 ## ⚡ Quick Start
 
 ```bash
 # 1. Install (see Installation below)
-# 2. Run the interactive setup wizard
+# 2. Create a starter configuration and optionally configure *.localhost
 devtether init
 
-# 3. Add your domains to devtether.yaml
+# 3. Add routes to devtether.yaml
 #    routes:
 #      web.localhost: 3222
 #      api.localhost: 8042
 
-# 4. Start routing!
-devtether up -d
+# 4. Start routing
+devtether up
+```
+
+Route changes currently require a restart:
+
+```bash
+devtether down
+devtether up
 ```
 
 ## 🛠️ Installation
 
-### Option 1: Quick Install (Recommended)
+### Option 1: Quick Install
 
 ```bash
 curl -sSfL https://raw.githubusercontent.com/ivin-titus/devtether/main/scripts/install.sh | sh
 ```
-The script auto-detects your OS and architecture, downloads the latest release, and verifies the checksum.
+
+The script detects your OS and architecture, downloads the latest release, and verifies its checksum.
 
 ### Option 2: Download Binary
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/ivin-titus/devtether/releases), extract it, and move it to your `$PATH` (e.g., `~/.local/bin/`).
+Download the latest release for your platform from [GitHub Releases](https://github.com/ivin-titus/devtether/releases), extract it, and move it to your `$PATH` (for example, `~/.local/bin/`).
 
 ### Option 3: Build from Source
 
 Requires Go 1.27.1+.
+
 ```bash
 git clone https://github.com/ivin-titus/devtether.git
 cd devtether
 make build && make install
 ```
 
----
+## 🪄 Setup: `devtether init`
 
-## 🪄 Post-Install Setup: The Wizard
+Run:
 
-Configuring your OS to natively resolve `.localhost` domains used to involve tedious, OS-specific manual steps. We fixed that. 
-
-Simply run:
 ```bash
 devtether init
 ```
 
-The interactive wizard will:
-1. Detect your OS and DNS resolver (e.g., `systemd-resolved` or `dnsmasq` on Linux, `/etc/resolver` on macOS).
-2. Generate a secure `devtether.yaml` configuration.
-3. Explicitly ask for permission to apply OS-level DNS routing and port capabilities (using targeted `sudo` commands).
+The interactive wizard can:
 
-*(Note: If you run a custom Linux DNS setup without systemd or dnsmasq, the wizard gracefully skips the automatic system mutations and leaves you in full control, while still generating a valid config file! See our [Custom Linux DNS Guide](docs/advanced-port-configuration.md#customizing-the-dns-port) to configure your system manually.)*
+1. create a valid `devtether.yaml` using the current Engine 1 schema;
+2. ask whether to enable detached daemon mode;
+3. on Linux, optionally apply `setcap` for privileged proxy-port binding;
+4. on supported Linux/macOS resolver setups, optionally configure the host resolver so `*.localhost` can resolve through DevTether.
 
-**Under the Hood:** DevTether uses an embedded DNS server and a reverse proxy. The wizard safely points your OS resolver to DevTether's internal DNS. If you're curious about how this remains secure-by-default, avoids privilege escalation, and binds ports safely, read our deep-dive in [ADR-011: Init Wizard & System Mutations](docs/adr/011-init-wizard-and-system-mutations.md) and the [Architecture Overview](docs/architecture.md).
+System-level changes are explicit and require user consent. On non-TTY input, the wizard skips interactive system changes and uses safe defaults.
 
----
+For manual resolver and port changes, see [Advanced Port Configuration](docs/advanced-port-configuration.md).
 
-## 💻 Usage
+## 💻 Current Usage
 
-### Configuration (`devtether.yaml`)
-Map your already-running services to clean domains. (The `devtether init` command generates a fully commented reference for you).
+### Current configuration
 
 ```yaml
 routes:
   web.localhost: 3222
-  api.localhost: 3223
-  db.localhost: 8042
+  api.localhost: 8042
+
+# Optional:
+# settings:
+#   daemon: true
+#   verbose: false
+#   log_path: "./.logs"
+
+# proxy:
+#   port: 80
+#   timeouts:
+#     idle: 120s
+
+# dns:
+#   bind: "127.0.0.1:5335"
 ```
-> *Note: Route changes currently require a quick restart (`devtether down && devtether up`).*
->
-> 💡 **Power User?** If you need to manually customize your proxy or DNS ports after initialization, see the [Advanced Port Configuration Guide](docs/advanced-port-configuration.md).
+
+The current configuration supports:
+
+- `routes` for static HTTP routes;
+- `settings.daemon`, `settings.verbose`, and `settings.log_path`;
+- `proxy.port` and `proxy.timeouts.idle`;
+- `dns.bind`, defaulting to `127.0.0.1:5335`.
+
+The configuration loader rejects unsupported future sections such as `orchestrate:`, `tunnel:`, and `access:`.
 
 ### Core Commands
 
-```bash
-devtether up                        # Start the routing daemon in foreground
-devtether up -d                     # Start in the background (logs to .logs/)
-devtether down                      # Stop the background daemon gracefully
-devtether status                    # Show daemon status (PID, uptime, route count, heap)
-devtether routes                    # Show active routes (live from daemon)
-devtether logs -f                   # Tail the daemon logs
-devtether doctor                    # Check system environment for common issues
+```text
+devtether init
+devtether up
+devtether up -d
+devtether down
+devtether status
+devtether routes
+devtether logs
+devtether logs -f
+devtether doctor
+devtether version
 ```
 
-> **Log Management:** If your log file gets too large while running in the background, you can safely clear it without restarting the daemon by running this command in your terminal:
-> ```bash
-> > .logs/devtether.log
-> ```
+Foreground mode writes logs to the terminal. Detached mode writes to `devtether.log` under the configured log directory.
 
----
+### Proxy port behavior
+
+The proxy tries the configured port first. In beta.7, if that bind fails because of permission or address-in-use conditions, it falls back to `127.0.0.1:8080`. There is no OS-assigned `:0` fallback. Both configured and fallback listeners remain loopback-only.
+
+### DNS behavior
+
+The embedded DNS server defaults to `127.0.0.1:5335`, answers only for active `.localhost` routes, and never forwards unrelated queries upstream. An existing route with an unsupported record type returns NODATA; an unknown route returns NXDOMAIN.
 
 ## 🗺️ Architecture & Roadmap
 
-DevTether is evolving from a simple reverse proxy into a comprehensive Developer Platform, structured into **Three Main Layers** inside a single Go binary. *(See [ADR-001](docs/adr/001-modular-engine-architecture.md) for details).*
+DevTether is built around four modular engines:
 
-| Layer | Purpose | Status |
-|-------|---------|--------|
-| **1. Networking Layer** | Reverse Proxy, DNS, Smart CORS, Traffic Inspection | ✅ Beta Complete |
-| **2. Process Orchestrator** | Process Groups, ephemeral ports, unified logging | 🔲 Planned |
-| **3. Access Controls** | Centralized IAM, RBAC, cross-network collaboration tokens | 🔲 Planned |
+| Engine | Purpose | Status |
+|---|---|---|
+| **Engine 1 — Local Static Routing** | Embedded DNS, static route table, HTTP reverse proxy | ✅ Current beta |
+| **Engine 2 — Orchestration** | Process groups, lifecycle management, dynamic `$PORT` allocation | 🔲 Planned |
+| **Engine 3 — Tunneling** | LAN sharing and self-hosted WAN relay | 🔲 Planned |
+| **Engine 4 — Access Control** | Scoped tokens, RBAC and service access policy | 🔲 Planned |
 
-**Platform Support:** Fully supported on macOS and Linux (amd64, arm64). Windows is not currently supported ([ADR-006](docs/adr/006-platform-support-and-cgo-policy.md)).
+The four engines may later be grouped into three conceptual user-facing layers. Engine 3 and Engine 4 are both future sharing/access capabilities. See [ADR-001](docs/adr/001-modular-engine-architecture.md).
 
----
+### Platform Support
+
+Linux and macOS are supported for current binary releases on amd64 and arm64. Linux is the primary development/test environment; macOS is shipped and exercised in CI but has less platform-specific coverage. Native Windows support is not currently provided.
 
 ## 📚 Documentation
 
-- [Architecture Overview](docs/architecture.md) — Deep dive into engines, request flows, and infrastructure.
-- [Advanced Port Configuration](docs/advanced-port-configuration.md) — How to manually adjust and decouple DNS/Proxy ports.
-- [Product Requirements](docs/PRD.md) — Goals, competitive landscape, and implementation roadmap.
-- [Architectural Decision Records](docs/adr/README.md) — The *"why"* behind our technical choices.
+- [Architecture Overview](docs/architecture.md) — current beta architecture and future engine boundaries.
+- [Advanced Port Configuration](docs/advanced-port-configuration.md) — proxy/DNS port customization and resolver alignment.
+- [Product Requirements](docs/PRD.md) — product goals, current scope, and target architecture.
+- [Architectural Decision Records](docs/adr/README.md) — the decisions behind the architecture.
+- [Engineering Standards](docs/engineering-standards.md) — mandatory coding and review standards.
+- [Contributing Guide](CONTRIBUTING.md) — development and pull-request workflow.
 
 ## 🤝 Contributing
 
-We welcome contributions! Before submitting a PR:
-1. Read our [Engineering Standards](docs/engineering-standards.md) (the code quality bar).
-2. Follow the [Contributing Guide](CONTRIBUTING.md).
-3. Run `make test` locally to ensure CI will pass.
+Before opening a PR:
+
+1. Read the [Engineering Standards](docs/engineering-standards.md).
+2. Read [CONTRIBUTING.md](CONTRIBUTING.md).
+3. Run `make test` locally.
+4. Remember that CI is the final release gate and runs tests on both Linux and macOS.
 
 ## 📄 License
+
 DevTether is licensed under the AGPL-3.0 License. See [LICENSE](LICENSE).

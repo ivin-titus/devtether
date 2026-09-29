@@ -1,312 +1,296 @@
 # Architecture Overview
 
-> *Version 2.0-beta — Revised 2026-05-30*
-> 
-> **Project Status: Beta** — Engine 1 (Local Static Routing) is fully implemented and provides a stable foundation for the project. The rest of Layer 1 (Cross-device tunnels) and Layers 2-3 are planned for future stages.
+> **Current release:** v2.0.0-beta.7
+>
+> **Current implementation:** Engine 1 — Local Static Routing
+>
+> This document separates the architecture that exists today from the target architecture that may be implemented later.
 
-This document provides a deep dive into the architecture of **DevTether**. If you're contributing to or hacking on the codebase, this is the best place to start.
+## 1. Current Beta Architecture
 
-> **Code standards:** See [Engineering Standards](engineering-standards.md) for
-> DRY, SoC, error handling, and testing rules that apply to all packages below.
+DevTether beta.7 is a single Go binary containing the CLI, daemon lifecycle, embedded DNS server, HTTP reverse proxy, router, configuration loader, logger, and supporting utilities.
 
----
+There is no current Web GUI, process orchestrator, LAN/WAN tunnel engine, access-control engine, or OS service-install module in the develop tree.
 
-## High-Level Architecture
-
-DevTether is evolving from a simple reverse proxy into a comprehensive Developer Platform. To maintain strict Separation of Concerns (SoC) and avoid architectural bloat, all features are conceptually structured into **Three Main Layers**. Internally, these layers are powered by **4 independent modular engines** (see [ADR-001](adr/001-modular-engine-architecture.md)) inside a single Go binary. Two shared infrastructure layers (DNS + Proxy) underpin all higher-level features.
+### Current component flow
 
 ```mermaid
 graph TB
-    subgraph "DevTether Binary"
-        DNS["DNS Engine<br/>(Auto-resolves domains)"]
-        PROXY["Proxy Engine<br/>(HTTP reverse proxy)"]
-        ORCH["Orchestrator<br/>(Process supervisor)"]
-        ACCESS["Access & Tunneling<br/>(Tokens + Relay)"]
-        IPC["IPC Daemon<br/>(Unix socket API)"]
-    end
-
-    subgraph "Optional: Self-Hosted Relay"
-        RELAY["devtether-relay<br/>(Deploy on your VPS)"]
-    end
-
-    subgraph "Developer Machine"
-        APP1["App on :3222<br/>(Static route)"]
-        APP2["App spawned by DevTether<br/>(Orchestrated PGID)"]
-    end
-
-    Browser["Browser / Teammate"] --> DNS
-    DNS --> PROXY
-    ACCESS --> PROXY
-    PROXY --> APP1
-    ORCH --> APP2
-    PROXY --> APP2
-    ACCESS -->|"WebSocket (WSS)"| RELAY
-    RELAY -->|"Public URL"| Internet["External Access"]
-    CLI["CLI / Web GUI"] --> IPC
+    CLI["devtether CLI"] --> IPC["Unix-socket IPC"]
+    CLI --> CFG["devtether.yaml"]
+    CFG --> ROUTER["Static Router"]
+    DNS["Embedded DNS"] --> ROUTER
+    PROXY["HTTP Reverse Proxy"] --> ROUTER
+    ROUTER --> APP1["Existing HTTP app on loopback port"]
+    IPC --> ROUTER
     IPC --> DNS
     IPC --> PROXY
-    IPC --> ORCH
 ```
 
-### The Unified Interface (CLI & GUI)
-DevTether operates on a **Unified Interface** principle. The Web GUI (`devtether.localhost`) is completely stateless and lazy-loaded (it is NOT a heavy background process). Both the CLI (e.g., `devtether stop api`) and the Web GUI call the exact same internal **IPC Daemon REST API**. This guarantees zero DRY violations — whatever is possible in the GUI is equally possible via the CLI.
+## 2. Current Configuration Contract
 
-### Onboarding (Interactive Wizard)
-DevTether provides a seamless interactive setup flow via `devtether init`. This command dynamically assesses the user's OS and TTY environment to generate a safe `devtether.yaml` configuration. It supports declarative overrides (e.g., `--daemon`, `--force`) and native OS-aware capabilities (applying `setcap` on Linux, pointing the system resolver at DevTether for `*.localhost`) while safely bypassing prompts in CI/CD environments. The CLI isolates all system mutations via explicit `sudo` commands (rather than requiring the entire CLI to run as root).
+The current beta accepts:
 
-### CLI Daemon Interactivity (`logs -f`)
-The CLI acts as a rich foreground client for the background daemon. Commands like `devtether logs -f` implement robust truncation detection and lockfile polling to provide a seamless tailing experience, automatically exiting if the daemon crashes or shuts down.
+```yaml
+routes:
+  web.localhost: 3222
+  api.localhost: 8042
 
----
+settings:
+  daemon: false
+  verbose: false
+  log_path: "./.logs"
 
-## Shared Infrastructure
+proxy:
+  port: 80
+  timeouts:
+    idle: 120s
 
-### DNS Engine (`internal/dns`)
-
-The DNS engine intercepts UDP queries on port 53 for the `.localhost` TLD and resolves them locally.
-
-**Behavior:**
-- Default bind: `127.0.0.1:5335` (safe unprivileged loopback only)
-- LAN mode bind: `0.0.0.0:53` (all interfaces, requires privileges)
-- **Fail-Fast**: The legacy `5353` fallback was removed. If the configured port fails to bind, the daemon crashes deterministically.
-- Responds to A record queries for the `.localhost` TLD
-- Returns `127.0.0.1` in solo mode, or the host's LAN IP in `--lan` mode
-- All non-matching queries receive `NXDOMAIN` — DevTether never forwards upstream
-- LAN IP is cached on startup and refreshed on network changes (not per-query)
-
-**Key design decision:** DevTether is NOT a recursive DNS resolver. It only answers queries for its own configured domains. See [ADR-002](adr/002-dns-design.md).
-
-### Proxy Engine (`internal/proxy`)
-
-The HTTP reverse proxy is the primary data plane for all engines.
-
-**Behavior:**
-- Default bind: `127.0.0.1:80`
-- Fallback chain: `127.0.0.1:80` → `127.0.0.1:8080`. The random `:0` fallback was removed in beta.7 to strictly enforce a fail-fast architecture, ensuring port assignments are completely predictable.
-- Uses `http.Server{}` with `ReadHeaderTimeout` (Slowloris protection) and `IdleTimeout` (dead connection pruning). Absolute read/write timeouts are intentionally omitted to support WebSocket, SSE, and streaming workloads (see ADR-008).
-- **Security (throttleCache):** Implements an O(1) hybrid LRU/TTL random map eviction cache for proxy error logs. This strictly bounds memory usage to prevent OOM (Out Of Memory) Denial of Service attacks when port scanners or malicious scripts repeatedly hit unresolved endpoints.
-- Supports `Connection: Upgrade` for WebSocket pass-through (HMR, live reload)
-- Strips and re-sets `X-Forwarded-*` headers to prevent injection
-- Enforces loopback-only targets — routes can only point to `127.0.0.1:<port>`
-- Graceful shutdown via `http.Server.Shutdown(ctx)` with a 5-second drain period
-
-**Middleware chain:**
-```
-Incoming Request
-  → Host Header Validation (exact match against route table)
-  → Access Token Validation (if RBAC enabled for this route)
-  → X-Forwarded-* Sanitization
-  → httputil.ReverseProxy.ServeHTTP()
+dns:
+  bind: "127.0.0.1:5335"
 ```
 
-### Router (`internal/router`)
+Unknown YAML fields are rejected by strict decoding.
 
-The Router is a thread-safe, in-memory map of `domain → Target` structs.
+The config types contain future `orchestrate:`, `tunnel:`, and `access:` structures for long-term schema design, but current validation rejects those sections because the corresponding engines are not implemented.
 
-```go
-type Target struct {
-    ServiceName string
-    Port        int
-    URL         *url.URL
-    Type        RouteType
-}
+## 3. Current DNS Engine
+
+Package: `internal/dns`
+
+The DNS server is embedded in the main binary.
+
+### Contract
+
+- Default bind: `127.0.0.1:5335`.
+- Managed namespace: `.localhost`.
+- No upstream forwarding.
+- Only routes that exist in the router are managed.
+- A record for a managed route returns `127.0.0.1`.
+- An existing route queried with an unsupported type such as AAAA or HTTPS returns NOERROR with zero answers (NODATA).
+- An unknown route returns NXDOMAIN.
+- Network-boundary handler panic recovery is enabled.
+
+`.internal` is not a current namespace.
+
+### Host integration
+
+`devtether init` can configure supported host resolvers with explicit user consent. The resolver configuration receives the exact DNS port used by the generated configuration. The safe default is `5335`.
+
+If `dns.bind` is manually changed, the host resolver must be updated to match.
+
+## 4. Current Proxy Engine
+
+Package: `internal/proxy`
+
+The current data plane is an HTTP reverse proxy.
+
+### Bind behavior
+
+1. Try the configured proxy port, default `127.0.0.1:80`.
+2. If permission is denied or the address is already in use, try `127.0.0.1:8080`.
+3. If the fallback also fails, startup fails.
+4. There is no random or OS-assigned `:0` fallback.
+
+Both configured and fallback listeners remain loopback-only.
+
+### Request behavior
+
+```text
+HTTP request
+  → normalize Host
+  → exact route lookup
+  → inject resolved Target into context
+  → sanitize forwarding headers
+  → httputil.ReverseProxy
+  → loopback backend
 ```
 
-- Protected by `sync.RWMutex` for concurrent read/write safety
-- Shared by both static routes and orchestrated services
-- Route changes require a daemon restart: `devtether down && devtether up`. Opt-in hot reloading is planned as a future enhancement based on community demand.
+The proxy supports WebSocket upgrades and streaming workloads. Fixed `ReadTimeout`/`WriteTimeout` values are intentionally omitted per ADR-008; `ReadHeaderTimeout` and `IdleTimeout` remain enforced.
 
-### IPC Daemon (`internal/daemon`)
+The proxy keeps a bounded error-log throttle cache. It stores cooldown timestamps and uses random map eviction when its capacity limit is reached; it is not an LRU/TTL cache.
 
-Exposes a RESTful API over a Unix domain socket for CLI ↔ daemon communication.
+## 5. Current Router
 
-**Instance Ownership (ADR-003):**
-- Primary authority: `flock(LOCK_EX)` on `devtether.lock` ensures exact instance ownership without race conditions. Kernel releases the lock on exit (including SIGKILL).
-- Secondary authority: `devtether.pid` for diagnostics, and `devtether.nonce` for authenticated shutdown.
-- Liveness check: Commands like `devtether logs -f` and `devtether down` monitor daemon health by attempting non-blocking `flock(LOCK_EX|LOCK_NB)` on the lock file (polling via `daemon.WaitForExit`), exiting immediately if the lock becomes available.
-- OS Signaling: Foreground daemons trap `SIGINT` (Ctrl+C) and `SIGTERM` (System Monitor) via `signal.NotifyContext` to trigger the graceful shutdown sequence and manually release locks/sockets.
+Package: `internal/router`
 
-**Daemon Startup Sequence & Readiness:**
-- **`flock`**: Acquires exclusive filesystem lock before any other socket action.
-- **`PID` / Socket Bind**: Writes PID file, then securely creates/binds the Unix socket.
-- **`Readiness Pipe`**: In detached (`-d`) mode, the parent waits on an anonymous pipe. Only after all core servers (DNS, proxy, IPC) successfully bind does the child write a JSON readiness payload.
+The router is a thread-safe in-memory map of normalized domain names to route targets.
 
-**Socket location & Security:**
-- Default: `$XDG_RUNTIME_DIR/devtether/devtether.sock`
-- Secure fallback: `os.TempDir()/devtether-<uid>/devtether.sock` (prevents cross-user conflicts and hijacking).
-- Symlink protection: Validates directory ownership via `Lstat` and UID matching before placing state files.
-- Permissions: Socket uses `0600` (owner-only), socket directory uses `0700`.
-- Root Isolation (macOS/sudo): When run with `sudo` (UID 0), the daemon is securely isolated to root's runtime directory, allowing safe mixed-privilege operations.
+- Routes are loaded from `routes:` at startup.
+- Route output is sorted where exposed by current CLI/API surfaces.
+- Configuration changes are not hot-reloaded.
+- Changing routes currently requires `devtether down && devtether up`.
 
-**Endpoints:**
+## 6. Current IPC Daemon
+
+Package: `internal/daemon`
+
+The CLI communicates with the daemon over an HTTP API carried by a Unix-domain socket.
+
+Current endpoints:
+
 | Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/routes` | List all active routes |
-| `GET` | `/status` | Get daemon uptime, PID, route count, and heap allocation |
-| `POST` | `/shutdown` | Trigger a graceful shutdown (requires `nonce` parameter matching the daemon's startup nonce) |
-| `POST` | `/services` | **[Planned]** Add a route or orchestrated service |
-| `DELETE` | `/services?domain=X` | **[Planned]** Remove a route or stop a service |
+|---|---|---|
+| GET | `/routes` | List active routes |
+| GET | `/status` | Report PID, uptime, route count, heap and config path |
+| POST | `/shutdown` | Request graceful shutdown using the daemon nonce |
 
----
+The current API does not support dynamic configuration writes.
 
-## Layer 1: The Networking Layer
+### Instance and state ownership
 
-This layer handles all traffic, routing, and local network topologies.
+- Runtime directories are per-user and validated before mutation.
+- Instance ownership uses an exclusive `flock`.
+- PID state is secondary diagnostic/fallback state.
+- Shutdown requests use a startup nonce.
+- Unix sockets are owner-only.
+- Detached startup uses an anonymous readiness pipe so the parent can distinguish a successful child bind from an early startup failure.
 
-**Config section:** `routes:`
+### Liveness waiting
 
-- **Static Routing:** Maps pre-existing services on fixed ports to named domains. No process management. The Router is populated directly from the YAML config.
-- **[Planned] Fallback Port Binding:** Automatically detects if `127.0.0.1:80` is occupied and gracefully attempts fallback ports (`127.0.0.1:8080`).
-- **[Planned] Smart Routing-Based CORS:** Automatically injects CORS headers for intra-project traffic (e.g., `portfolio.localhost` to `api.portfolio.localhost`) while safely managing project boundaries.
-- **[Planned] Traffic Inspection:** Buffers payloads via `sync.Pool` (zero-bloat) and streams them via IPC for 1-click webhook replays.
-- **Rich Error Pages:** Serves an ultra-lightweight HTML error page if a backend goes down.
+`WaitForExit` probes the daemon lock with a non-blocking `flock` every **500 ms** until the lock is released or the caller's context is cancelled. A future event-driven alternative remains deferred.
 
----
+## 7. Current CLI Surface
 
-## Layer 2: The Process Orchestrator Layer (`internal/orchestrator`)
+| Command | Current behavior |
+|---|---|
+| `init` | Generate config; optionally configure resolver and Linux setcap |
+| `up` / `start` | Start the routing daemon |
+| `down` / `stop` | Gracefully stop the daemon |
+| `status` | Show daemon state |
+| `routes` | Show active routes |
+| `logs` | Show detached daemon logs |
+| `doctor` | Diagnose environment/configuration issues |
+| `version` | Show build information |
 
-**Config section:** `orchestrate:`
+Detached logs use the configured log directory. When `settings.log_path` is omitted, the default is `.logs/devtether.log` relative to the config file.
 
-### Supervisor
-- Spawns processes via `exec.Command("sh", "-c", command)`
-- Sets `SysProcAttr{Setpgid: true}` for **Process Group** management.
-- Injects `PORT=<allocated_port>` into the command's environment.
-- Captures stdout/stderr with `[service-name]` prefixes for **Unified Logging**.
-- Monitors process exit in a background goroutine, cleans up route + port on crash.
+## 8. Current Initialization Flow
 
-### Port Manager
-- Allocates ephemeral ports via `net.ListenTCP("127.0.0.1:0")`.
-- Maintains an internal dedup map to prevent double-allocation.
-- Releases ports when services are stopped or crash.
+`devtether init` is an explicit local integration command.
 
-### Shutdown Sequence
-```
-1. Send SIGTERM to process group (-PID)
-2. Wait 5 seconds
-3. If still alive, send SIGKILL to process group
-4. Remove route from Router
-5. Release port in PortManager
-```
+On supported systems it may:
 
----
+1. create a valid `devtether.yaml`;
+2. optionally apply Linux `setcap` for privileged proxy binding;
+3. detect supported DNS resolver integration;
+4. ask whether the user wants system resolver changes;
+5. write the DNS port into the generated resolver configuration.
 
-## Layer 3: The Access Controls Layer (`internal/access` & `internal/tunnel`)
+System mutations require explicit user consent. Unsupported resolver setups are reported instead of silently changed.
 
-**Config sections:** `tunnel:` and `access:`
+## 9. Current Health Reporting
 
-This layer secures cross-network and cross-org collaboration.
+The startup summary prints configured routes and currently starts a lightweight route health-check loop that probes backend ports every 3 seconds while the daemon is running.
 
-### TLD-Based Network Scoping
-To drastically simplify configuration for Engine 3 (Tunneling/LAN Sharing) without verbose `expose_lan: true` flags in YAML, we adopt a strict TLD convention that natively defines network boundaries:
-1. **`*.localhost` (Local-Only):** Strictly bound to the loopback interface (`127.0.0.1`). Never broadcasted over mDNS. Used for private services that should never leave the developer's machine (e.g., local database admin panels).
-2. **`*.internal` (LAN-Shared):** Bound to `0.0.0.0` (all interfaces). Automatically broadcasted to the local network via mDNS. Allows colleagues on the same Wi-Fi to immediately access the service. The domain itself dictates the security posture.
+This health-check behavior is current but is intentionally considered a candidate for future replacement with on-demand `devtether routes` checks. It must not be described as a zero-polling daemon feature.
 
-### LAN Sharing & mDNS
-- Switching to `.internal` automatically expands the proxy bind to `0.0.0.0` for that route.
-- Broadcasts `.internal` service names via mDNS (`avahi-publish-address` on Linux, `dns-sd` on macOS).
+## 10. Target Architecture — Future Engines
 
-### WAN Tunneling (Self-Hosted Relay)
-- Establishes outbound WebSocket (WSS) connection to a self-hosted `devtether-relay`.
-- The relay performs TLS termination with auto-provisioned Let's Encrypt certificates.
+The target architecture contains four independent engines:
 
-### Centralized RBAC & IAM
-- Generates HMAC-SHA256 signed JWTs with scoped services (glob patterns).
-- Proxy middleware validates tokens on incoming requests before forwarding.
-- WAN tunnels force RBAC on by default — no opt-out.
+### Engine 1 — Local Static Routing
 
----
+Current foundation:
+- DNS;
+- HTTP proxy;
+- static router;
+- daemon/IPC lifecycle.
 
-## Codebase Structure
+### Engine 2 — Orchestration
 
-```
+Future:
+- process groups;
+- process lifecycle supervision;
+- dynamic `$PORT` allocation;
+- unified process logs.
+
+### Engine 3 — Tunneling
+
+Future:
+- LAN sharing;
+- WAN tunnels;
+- self-hosted relay;
+- optional `devtether-relay` binary.
+
+### Engine 4 — Access Control
+
+Future:
+- scoped access tokens;
+- RBAC;
+- service policy enforcement for shared/tunneled services.
+
+The current beta intentionally rejects configuration for these future engines.
+
+## 11. Future Web GUI / Traffic Inspection
+
+A future GUI is proposed only after the IPC/config-management model is expanded.
+
+The deferred design proposes:
+- a lightweight UI served at `devtether.localhost`;
+- embedded static assets;
+- strict browser Origin/Host validation;
+- richer `/api/*` management endpoints;
+- traffic inspection/replay.
+
+These are future proposals, not current beta capabilities.
+
+## 12. Future OS Service Management
+
+System-level `systemd`/launchd` integration is future/deferred work. It is not part of the current command surface or source tree.
+
+## 13. Current Codebase Structure
+
+```text
 devtether/
 ├── cmd/
-│   └── devtether/               # Main CLI binary
-│       └── main.go
-│
+│   └── devtether/
 ├── internal/
-│   ├── cli/                    # Cobra command definitions
-│   ├── config/                 # YAML config parsing + validation
-│   ├── daemon/                 # IPC Unix socket server + client
-│   ├── dns/                    # DNS Engine
-│   ├── proxy/                  # Proxy Engine (server + handler)
-│   └── router/                 # Route table (domain → target)
-│
+│   ├── cli/
+│   ├── config/
+│   ├── daemon/
+│   ├── dns/
+│   ├── logger/
+│   ├── netutil/
+│   ├── proxy/
+│   └── router/
 ├── docs/
-│   ├── PRD.md                  # Product Requirements Document
-│   ├── architecture.md         # This file
-│   └── adr/                    # Architectural Decision Records
-│
-├── devtether.yaml               # Local config (gitignored, created by \`devtether init\`)
+├── scripts/
 ├── go.mod
-├── go.sum
-├── LICENSE
 └── README.md
 ```
 
-### Planned Directories (Future Stages)
+Future packages such as `internal/orchestrator`, `internal/tunnel`, `internal/access`, and `cmd/devtether-relay/` are not present in the current source tree.
 
-```
-│   ├── internal/orchestrator/   # Process Supervisor + Port Manager (Layer 2)
-│   ├── internal/tunnel/         # Tunnel client + LAN broadcaster (Layer 3)
-│   ├── internal/access/         # Token generation + validation (Layer 3)
-│   └── cmd/devtether-relay/     # Relay server binary (Layer 3)
-```
+## 14. Lifecycle
 
----
+### Startup
 
-## Developer Experience (DX) Architecture
-
-### The Stateless Web GUI (`devtether.localhost`)
-The Web GUI is an ultra-lightweight (Vanilla JS / Preact) dashboard served internally via the Proxy Engine.
-- **Zero State:** It acts strictly as a visual editor for `devtether.yaml` and a consumer of the IPC Daemon's REST API.
-- **Updates:** When a user clicks "Add Service" in the GUI, it updates the YAML file via the IPC API. (Note: Opt-in hot reloading is planned as a future enhancement based on community demand).
-- **Network Inspector:** Buffers requests using `sync.Pool` (adhering to zero-bloat engineering standards) and streams them over the IPC socket for webhook inspection and replay.
-
-### Unified Logging Architecture
-As DevTether orchestrates multiple processes, it streams logs via the IPC daemon using strict service prefixes:
-- `[proxy | portfolio]` for network access logs (Layer 1).
-- `[app   | api]` for `stdout`/`stderr` from orchestrated processes (Layer 2).
-- The CLI supports Docker-style streaming: `devtether logs -f <service> --type=network`.
-
-### Granular Service Management
-The command `devtether stop <service>` instructs the IPC Daemon to coordinate across layers:
-1. **Layer 1 (Networking):** Disables the static route.
-2. **Layer 2 (Orchestration):** Sends `SIGTERM` to the process tree and releases the ephemeral port.
-3. **Layer 3 (Access/Tunnel):** Unregisters the service from the WAN relay and stops mDNS broadcast.
-
----
-
-## Lifecycle Management
-
-### Startup (`devtether up`)
-
-```
-1. Load devtether.yaml
-2. Check for existing daemon (`CheckRunning`)
-3. Initialize Router and populate from `routes:`
-4. Start IPC Daemon (`flock`, `pid`, `nonce`, bind Unix socket)
-5. Notify parent of readiness (if daemonized)
-6. Start DNS Engine (goroutine)
-7. Start Proxy Engine (goroutine, with http.Server)
-8. If `orchestrate:` section exists:
-   a. For each service: allocate port → add route → spawn process
-9. Block on signal handler (SIGINT/SIGTERM) or watchdog failure
+```text
+1. Load and validate devtether.yaml
+2. Apply explicit foreground/detached mode rules
+3. Check for an existing daemon before binding listeners
+4. Load static routes
+5. Create DNS, proxy and IPC server objects
+6. Bind DNS
+7. Bind proxy
+8. Bind IPC
+9. Start serving goroutines
+10. In detached mode, send readiness through the anonymous pipe
+11. Render startup state and run the current route health check loop
 ```
 
-### Shutdown (`Ctrl+C` or `devtether down`)
+### Shutdown
 
-```
-1. Receive SIGINT/SIGTERM
-2. Stop accepting new proxy connections
-3. Drain in-flight proxy requests (5s timeout)
-4. SIGTERM all orchestrated processes (5s timeout → SIGKILL)
-5. Shutdown DNS server
-6. Close IPC socket, remove socket file
-7. Disconnect tunnel (if active)
-8. Exit cleanly
+```text
+1. Receive SIGINT/SIGTERM or IPC shutdown request
+2. Stop accepting new proxy work
+3. Drain active proxy connections for up to 5 seconds
+4. Shut down DNS and IPC
+5. Release runtime ownership and clean transient state
+6. Exit
 ```
 
----
+Graceful streaming behavior is governed by ADR-008 and the implementation in the proxy/daemon lifecycle packages.
 
-*This architecture document is a living reference. It will be updated as layers are implemented across the project's stages.*
+*Future architecture must remain clearly separated from the current beta contract.*

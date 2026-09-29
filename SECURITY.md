@@ -19,9 +19,10 @@ If you are using an unsupported version, we strongly recommend upgrading to the 
 
 If you believe you have found a security vulnerability in DevTether, please report it privately via email to:
 * **ivintitus@hotmail.com**
-* **yukina-hirawa@outlook.com**
 
-Please include both email addresses in your disclosure to ensure a prompt response.
+Please include both email addresses in your disclosure to ensure a prompt response. 
+
+*(Optional: If you have a PGP key, we strongly encourage encrypting your report to ensure confidentiality. Let us know in your initial contact if you wish to establish a secure channel.)*
 
 ### What to Include in Your Report
 To help us triage and fix the vulnerability as quickly as possible, please provide the following details:
@@ -44,6 +45,10 @@ When you report a vulnerability, the DevTether maintainers follow this process:
 4. **Embargo Period:** We ask that you maintain confidentiality until the patch is publicly released.
 5. **Disclosure:** Once the patch is released, we will publish a security advisory. With your permission, we will credit you for the discovery.
 
+## Coordinated Disclosure (CD)
+
+This project accepts **Coordinated Disclosure (CD)**. This means we may patch a vulnerability and roll it into a release without an immediate public announcement (to protect users before they can upgrade). We will coordinate the public disclosure of the vulnerability with you, or credit you in our security advisories upon your request.
+
 ## Scope
 
 **In Scope:**
@@ -51,10 +56,21 @@ When you report a vulnerability, the DevTether maintainers follow this process:
 - Privilege escalation or bypasses of the IPC daemon socket permissions.
 - Remote Code Execution (RCE) or Denial of Service (DoS) triggered by malicious network requests.
 - Information disclosure or leaks of sensitive configuration data.
+- **Third-Party Dependencies:** Vulnerabilities in underlying libraries or Go modules used by DevTether.
 
 **Out of Scope:**
 - Vulnerabilities in third-party orchestrated processes spawned by DevTether.
 - Issues related to physically compromised developer machines.
 - Theoretical attacks without a viable proof of concept.
+- **Intentional Local Abuse:** Scanning, brute-forcing, or intentional resource exhaustion (DoS) against your own local daemon without an underlying exploitable flaw.
 
+## Additional Information
+
+### Third-Party Dependencies
+We actively scan our Go dependencies for known vulnerabilities (CVEs) as part of our CI pipeline. If you discover a zero-day vulnerability in a dependency that affects DevTether, please report it to us so we can coordinate a fix upstream or implement a mitigation.
+
+### License
+This project is licensed under the AGPL-3.0 License.
+
+---
 Thank you for helping keep DevTether secure!
