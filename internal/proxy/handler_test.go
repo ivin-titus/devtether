@@ -114,7 +114,7 @@ func TestStreamingSSENotBuffered(t *testing.T) {
 	defer cancel()
 
 	resp := proxyGet(t, ctx, proxySrv.URL, "/events")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
@@ -179,7 +179,7 @@ func TestClientCancellationPropagates(t *testing.T) {
 	defer cancel()
 
 	resp := proxyGet(t, ctx, proxySrv.URL, "/events")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	waitForChannel(t, backendStarted, "backend handler to start streaming", 5*time.Second)
 
@@ -220,7 +220,7 @@ func TestMidStreamAbort(t *testing.T) {
 		// Aborted mid-stream before/at delivery; no 502 page was rendered.
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err == nil {
@@ -252,7 +252,7 @@ func TestWebSocketUpgrade(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
 		_ = rw.Flush()
@@ -273,12 +273,16 @@ func TestWebSocketUpgrade(t *testing.T) {
 
 	proxySrv := newTestProxy(t, backendPort(t, backend))
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	proxyAddr := strings.TrimPrefix(proxySrv.URL, "http://")
-	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	_, err = fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n", testHost)
@@ -296,20 +300,20 @@ func TestWebSocketUpgrade(t *testing.T) {
 	}
 	// Drain handshake headers.
 	for {
-		line, err := rw.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read handshake headers: %v", err)
+		hdr, herr := rw.ReadString('\n')
+		if herr != nil {
+			t.Fatalf("read handshake headers: %v", herr)
 		}
-		if line == "\r\n" {
+		if hdr == "\r\n" {
 			break
 		}
 	}
 
-	if _, err := rw.WriteString("ping\n"); err != nil {
-		t.Fatalf("write frame: %v", err)
+	if _, werr := rw.WriteString("ping\n"); werr != nil {
+		t.Fatalf("write frame: %v", werr)
 	}
-	if err := rw.Flush(); err != nil {
-		t.Fatalf("flush frame: %v", err)
+	if ferr := rw.Flush(); ferr != nil {
+		t.Fatalf("flush frame: %v", ferr)
 	}
 
 	echo, err := rw.ReadString('\n')
@@ -344,7 +348,7 @@ func TestXForwardedHeaders(t *testing.T) {
 	defer cancel()
 
 	resp := proxyGet(t, ctx, proxySrv.URL, "/path")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -362,8 +366,11 @@ func TestXForwardedHeaders(t *testing.T) {
 // TestBadGatewayPage verifies that when the backend is unreachable the
 // proxy renders the branded 502 page (headers not yet sent path).
 func TestBadGatewayPage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Grab an ephemeral port and release it so nothing listens there.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := new(net.ListenConfig).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -372,11 +379,8 @@ func TestBadGatewayPage(t *testing.T) {
 
 	proxySrv := newTestProxy(t, port)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	resp := proxyGet(t, ctx, proxySrv.URL, "/")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
