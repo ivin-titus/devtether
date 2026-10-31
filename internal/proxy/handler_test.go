@@ -120,19 +120,24 @@ func TestStreamingSSENotBuffered(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
 	}
 
-	// Read until event-1 arrives; the backend is still blocked, so this
-	// read succeeding proves the first event was not buffered.
+	// Read until the complete first event (including its terminating
+	// blank line) arrives; the backend is still blocked, so this read
+	// succeeding proves the first event was not buffered.
 	waitForChannel(t, event1Sent, "backend to send event-1", 5*time.Second)
 
 	reader := bufio.NewReader(resp.Body)
-	if err := readUntilContains(ctx, reader, "event-1"); err != nil {
-		t.Fatalf("did not receive event-1 while stream was still open: %v", err)
+	if err := readUntilContains(ctx, reader, "event-1\n\n"); err != nil {
+		t.Fatalf("did not receive complete event-1 while stream was still open: %v", err)
 	}
 
 	// Release the remaining events and verify the complete body.
 	once.Do(func() { close(releaseRest) })
-	if err := readUntilContains(ctx, reader, "event-3"); err != nil {
-		t.Fatalf("did not receive full stream: %v", err)
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read remaining stream: %v", err)
+	}
+	if want := "data: event-2\n\ndata: event-3\n\n"; string(rest) != want {
+		t.Fatalf("remaining body = %q, want %q — stream truncated", rest, want)
 	}
 }
 
@@ -190,15 +195,21 @@ func TestClientCancellationPropagates(t *testing.T) {
 
 // TestMidStreamAbort verifies ADR-008: when the backend fails mid-stream
 // (headers already sent), the proxy aborts the connection and the client
-// observes a truncated body — never an injected 502 error page.
+// observes a truncated body — never an injected 502 error page. The
+// backend flushes a 200 status and a first chunk, then aborts, so the
+// client deterministically receives status 200 and the partial payload
+// before the stream is severed.
 func TestMidStreamAbort(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Declare more than we deliver, then return early: the upstream
-		// body ends unexpectedly, surfacing as a mid-stream proxy error.
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Length", "4096")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("partial-payload"))
+		_, _ = fmt.Fprint(w, "partial-payload")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Abort mid-stream: the proxy's copy loop hits a read error after
+		// headers were already sent downstream.
+		panic(http.ErrAbortHandler)
 	}))
 	defer backend.Close()
 
@@ -207,8 +218,6 @@ func TestMidStreamAbort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// The abort may surface either as a transport error from Do or as a
-	// truncated body read — both prove the connection was torn down.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxySrv.URL+"/download", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -217,11 +226,13 @@ func TestMidStreamAbort(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		// Aborted mid-stream before/at delivery; no 502 page was rendered.
-		return
+		t.Fatalf("no HTTP response from proxy: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — proxy must not rewrite an open stream", resp.StatusCode)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err == nil {
 		t.Fatalf("expected truncated-stream read error, got clean EOF with body %q", body)
@@ -234,10 +245,13 @@ func TestMidStreamAbort(t *testing.T) {
 	}
 }
 
-// TestWebSocketUpgrade verifies that an HTTP Upgrade handshake and
-// bidirectional data flow work through the proxy middleware stack.
-// The middleware's Unwrap() must expose the real writer for hijacking.
-func TestWebSocketUpgrade(t *testing.T) {
+// TestHTTPUpgradeTunnel verifies that a generic HTTP Upgrade handshake
+// (the mechanism WebSocket-style connections rely on) and bidirectional
+// data flow work through the proxy middleware stack. The middleware's
+// Unwrap() must expose the real writer for hijacking. This exercises the
+// 101 upgrade and raw tunnel only; it is not an RFC 6455 WebSocket frame
+// test.
+func TestHTTPUpgradeTunnel(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 			http.Error(w, "not a websocket request", http.StatusBadRequest)
