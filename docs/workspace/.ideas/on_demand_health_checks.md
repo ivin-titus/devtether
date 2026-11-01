@@ -1,6 +1,6 @@
 # Feature Proposal: On-Demand Health Checks
 
-**Status:** Deferred to future release (post-v2.0.0-beta.7)
+**Status:** Implemented
 **Priority:** High
 
 ## Problem

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
@@ -19,6 +20,7 @@ type contextKey string
 const (
 	hostCtxKey   contextKey = "host"
 	targetCtxKey contextKey = "target"
+	genCtxKey    contextKey = "gen"
 )
 
 // Handler implements http.Handler. It inspects the Host header,
@@ -26,6 +28,7 @@ const (
 // the request to the local backend.
 type Handler struct {
 	resolver router.Resolver
+	tracker  *health.Tracker
 
 	// rp is the shared reverse proxy engine.
 	rp *httputil.ReverseProxy
@@ -37,9 +40,11 @@ type Handler struct {
 }
 
 // NewHandler creates a proxy handler with the given resolver.
-func NewHandler(resolver router.Resolver) *Handler {
+// tracker records reachability observations from real proxy traffic.
+func NewHandler(resolver router.Resolver, tracker *health.Tracker) *Handler {
 	h := &Handler{
 		resolver:      resolver,
+		tracker:       tracker,
 		errorLog:      &throttleCache{},
 		errorCooldown: 10 * time.Second,
 	}
@@ -58,6 +63,19 @@ func NewHandler(resolver router.Resolver) *Handler {
 				pr.Out.Header.Set("X-Forwarded-Host", host)
 			}
 		},
+		// Any backend response — including HTTP 4xx/5xx — proves the backend
+		// is reachable at TCP level and marks the route online.
+		ModifyResponse: func(resp *http.Response) error {
+			host, _ := resp.Request.Context().Value(hostCtxKey).(string)
+			gen, _ := resp.Request.Context().Value(genCtxKey).(uint64)
+			if host != "" {
+				h.tracker.Observe(host, gen, health.Observation{
+					Status:    health.StatusOnline,
+					CheckedAt: time.Now(),
+				})
+			}
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			if errors.Is(err, context.Canceled) {
 				return
@@ -68,6 +86,21 @@ func NewHandler(resolver router.Resolver) *Handler {
 				panic(http.ErrAbortHandler)
 			}
 			host, _ := req.Context().Value(hostCtxKey).(string)
+			// If the incoming request context is already done (client
+			// cancelled or its deadline expired), the transport error —
+			// which may wrap an OpError with Op == "dial" — reflects
+			// client-side termination, not backend unreachability.
+			if req.Context().Err() == nil && netutil.IsDialFailure(err) {
+				// Only a confirmed dial-stage failure marks the route
+				// offline. Post-connect failures (mid-stream resets,
+				// header timeouts) are inconclusive.
+				gen, _ := req.Context().Value(genCtxKey).(uint64)
+				h.tracker.Observe(host, gen, health.Observation{
+					Status:    health.StatusOffline,
+					CheckedAt: time.Now(),
+					Reason:    "connect failed",
+				})
+			}
 			target, ok := req.Context().Value(targetCtxKey).(router.Target)
 
 			var targetURL string
@@ -141,6 +174,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.WithValue(r.Context(), hostCtxKey, host)
 	ctx = context.WithValue(ctx, targetCtxKey, target)
+	// The request is one health-observation operation; its generation is
+	// allocated when it begins so late results cannot clobber newer evidence.
+	ctx = context.WithValue(ctx, genCtxKey, h.tracker.Next())
 	h.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 

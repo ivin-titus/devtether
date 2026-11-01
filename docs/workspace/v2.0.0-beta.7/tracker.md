@@ -191,6 +191,12 @@
     - **Graceful Shutdown Bypass:** Prevented `devtether down` from bypassing the 5-second proxy active connection drain by introducing `shutdownComplete` channels. `Serve()` methods across Proxy, DNS, and IPC now explicitly block until `Shutdown()` finishes.
     - **IPC Deadlock:** Fixed a bug where `handleShutdown` blocked infinitely on `<-r.Context().Done()`, causing the internal `Shutdown()` to hit its 10-second timeout on every invocation. `devtether down` now polls `daemon.WaitForExit()` to correctly track daemon termination without artificial delays.
 
+- [x] **[Feature] Event-Driven & On-Demand Route Health (implements `.ideas/on_demand_health_checks.md`)**
+  *Assignee:* `@ivin-titus (via Devin)`
+  *Priority:* High
+  *Status:* **Implemented**. Periodic polling fully removed.
+  *Description:* Replaced the 3-second route health-check ticker with a bounded one-shot startup verification, proxy-observed health updates (online on any backend response, offline only on confirmed dial failure), and `devtether routes --check` daemon-side diagnostics via `POST /routes/check`. Health state lives in a new in-memory `internal/health` tracker inside the daemon process; unchecked routes report `unknown`. Ordering uses a generation allocated when an observation begins, so stale probes cannot clobber newer state.
+
 ## Scope Discoveries (Deferred / Backlog)
 *(If an audit or idea creates new problems mid-sprint, log it here. Do NOT derail the current release.)*
 - [ ] **[Feature] IPC REST API Refactor**

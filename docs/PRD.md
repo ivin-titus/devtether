@@ -234,7 +234,7 @@ Orchestration, LAN/WAN sharing, relay transport, RBAC, and a future GUI each rec
 | Engine 3 | 🔲 Planned | LAN/WAN tunneling |
 | Engine 4 | 🔲 Planned | Access control |
 
-Dynamic route reloading, a Web GUI, traffic inspection, and on-demand health checks remain separate future proposals and are not part of the current beta.
+Dynamic route reloading, a Web GUI, and traffic inspection remain separate future proposals and are not part of the current beta. On-demand health checks are implemented as of this release: the daemon performs a single bounded startup verification, records health observations from real proxy traffic, and serves `devtether routes --check` diagnostics over IPC.
 
 ---
 

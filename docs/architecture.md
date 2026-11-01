@@ -131,8 +131,9 @@ Current endpoints:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/routes` | List active routes |
+| GET | `/routes` | List active routes with latest health observations |
 | GET | `/status` | Report PID, uptime, route count, heap and config path |
+| POST | `/routes/check` | Probe every active route's backend and return structured results |
 | POST | `/shutdown` | Request graceful shutdown using the daemon nonce |
 
 The current API does not support dynamic configuration writes.
@@ -181,9 +182,15 @@ System mutations require explicit user consent. Unsupported resolver setups are 
 
 ## 9. Current Health Reporting
 
-The startup summary prints configured routes and currently starts a lightweight route health-check loop that probes backend ports every 3 seconds while the daemon is running.
+Route health is observational metadata only; it never affects routing or DNS decisions and an `offline` route remains routable. There is no periodic health-check ticker: the daemon performs no recurring backend connection attempts while idle. Health state lives in an in-memory `internal/health` tracker inside the daemon process only — it is never persisted and never survives a restart.
 
-This health-check behavior is current but is intentionally considered a candidate for future replacement with on-demand `devtether routes` checks. It must not be described as a zero-polling daemon feature.
+Three sources feed the tracker:
+
+- **Startup verification:** `devtether up` runs a one-shot bounded check over all configured routes after bind, concurrently with a bounded worker count and an overall budget of ~5 seconds. It never blocks daemon readiness; routes the check does not reach are reported `unknown`.
+- **Proxy observations:** when proxied traffic reaches a backend (any HTTP response, including 4xx/5xx), the route is observed `online`. A confirmed dial-stage connection failure is observed `offline`. Client cancellations, post-connect failures, response-header timeouts, and streaming aborts (ADR-008) are inconclusive and never change the recorded status.
+- **On-demand diagnostics:** `devtether routes --check` asks the daemon over IPC (`POST /routes/check`) to run the same bounded check on demand and prints structured results.
+
+All probes measure TCP reachability, not application-level health; reported latency is connection latency, not HTTP response time. Observations are ordered by a generation allocated when an observation begins, so an older, slower probe cannot overwrite a newer observation.
 
 ## 10. Target Architecture — Future Engines
 
@@ -250,6 +257,7 @@ devtether/
 │   ├── config/
 │   ├── daemon/
 │   ├── dns/
+│   ├── health/
 │   ├── logger/
 │   ├── netutil/
 │   ├── proxy/
@@ -277,7 +285,7 @@ Future packages such as `internal/orchestrator`, `internal/tunnel`, `internal/ac
 8. Bind IPC
 9. Start serving goroutines
 10. In detached mode, send readiness through the anonymous pipe
-11. Render startup state and run the current route health check loop
+11. Render startup state and run the one-shot bounded startup health check
 ```
 
 ### Shutdown

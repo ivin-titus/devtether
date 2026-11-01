@@ -39,3 +39,16 @@ func IsAddrInUse(err error) bool {
 func IsRecoverable(err error) bool {
 	return IsPermissionError(err) || IsAddrInUse(err)
 }
+
+// IsDialFailure returns true if err occurred while establishing a connection
+// (TCP dial/connect stage) rather than after the connection was established.
+// It covers connection refusal, dial timeouts, and unreachable backends, but
+// never post-connect failures such as mid-stream resets, response-header
+// timeouts, or client-side cancellation.
+func IsDialFailure(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op == "dial"
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
+}

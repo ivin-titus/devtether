@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ivin-titus/devtether/internal/config"
+	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
@@ -36,10 +37,11 @@ func (s *Server) BindError() error {
 
 // NewServer creates a proxy server with the given configuration.
 // The resolver is used for Host header → backend target lookups.
-func NewServer(cfg config.ProxyConfig, resolver router.Resolver) *Server {
+// tracker records backend reachability observed from real proxy traffic.
+func NewServer(cfg config.ProxyConfig, resolver router.Resolver, tracker *health.Tracker) *Server {
 	idleTimeout := config.ParseDuration(cfg.Timeouts.Idle, config.DefaultIdleTimeout)
 
-	handler := NewHandler(resolver)
+	handler := NewHandler(resolver, tracker)
 
 	return &Server{
 		httpServer: &http.Server{

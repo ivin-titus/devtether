@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/router"
 )
 
@@ -29,7 +30,7 @@ func newTestProxy(t *testing.T, backendPort int) *httptest.Server {
 		t.Fatalf("AddRoute: %v", err)
 	}
 
-	srv := httptest.NewServer(LoggingMiddleware(NewHandler(engine)))
+	srv := httptest.NewServer(LoggingMiddleware(NewHandler(engine, health.NewTracker())))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -405,5 +406,284 @@ func TestBadGatewayPage(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Bad Gateway") {
 		t.Fatal("502 body does not contain the branded error page")
+	}
+}
+
+// newTestProxyWithTracker is newTestProxy that also returns the health
+// tracker shared with the handler under test.
+func newTestProxyWithTracker(t *testing.T, backendPort int) (*httptest.Server, *health.Tracker) {
+	t.Helper()
+
+	engine := router.NewEngine()
+	if err := engine.AddRoute(testHost, "test-service", backendPort, router.RouteStatic); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+
+	tracker := health.NewTracker()
+	srv := httptest.NewServer(LoggingMiddleware(NewHandler(engine, tracker)))
+	t.Cleanup(srv.Close)
+	return srv, tracker
+}
+
+func routeStatus(t *testing.T, tracker *health.Tracker) health.Status {
+	t.Helper()
+	return tracker.Snapshot([]string{testHost})[0].Status
+}
+
+// TestHealthOnlineObservation verifies that a successful backend response —
+// even an application-level HTTP 500 — marks the route online.
+func TestHealthOnlineObservation(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer backend.Close()
+
+	proxySrv, tracker := newTestProxyWithTracker(t, backendPort(t, backend))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp := proxyGet(t, ctx, proxySrv.URL, "/")
+	_ = resp.Body.Close()
+
+	if got := routeStatus(t, tracker); got != health.StatusOnline {
+		t.Fatalf("HTTP 500 response must still mark backend online, got %s", got)
+	}
+}
+
+// TestHealthOfflineObservation verifies that a backend dial failure marks
+// the route offline.
+func TestHealthOfflineObservation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	l, err := new(net.ListenConfig).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+
+	proxySrv, tracker := newTestProxyWithTracker(t, port)
+
+	resp := proxyGet(t, ctx, proxySrv.URL, "/")
+	_ = resp.Body.Close()
+
+	if got := routeStatus(t, tracker); got != health.StatusOffline {
+		t.Fatalf("refused backend must mark route offline, got %s", got)
+	}
+}
+
+// TestHealthClientCancelLeavesState verifies that client cancellation does
+// not incorrectly mark a backend offline.
+func TestHealthClientCancelLeavesState(t *testing.T) {
+	backendStarted := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "chunk")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(backendStarted)
+		<-r.Context().Done()
+	}))
+	defer backend.Close()
+
+	proxySrv, tracker := newTestProxyWithTracker(t, backendPort(t, backend))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resp := proxyGet(t, ctx, proxySrv.URL, "/stream")
+	defer func() { _ = resp.Body.Close() }()
+	waitForChannel(t, backendStarted, "backend to start", 5*time.Second)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	if got := routeStatus(t, tracker); got != health.StatusOnline {
+		t.Fatalf("client cancel must not mark backend offline, got %s", got)
+	}
+}
+
+// TestHealthConcurrentRequests verifies tracker updates are race-free under
+// concurrent proxy traffic.
+func TestHealthConcurrentRequests(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	proxySrv, tracker := newTestProxyWithTracker(t, backendPort(t, backend))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				resp := proxyGet(t, ctx, proxySrv.URL, "/")
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := routeStatus(t, tracker); got != health.StatusOnline {
+		t.Fatalf("expected online after concurrent requests, got %s", got)
+	}
+}
+
+// roundTripFunc lets tests inject a controllable backend transport into the
+// handler's reverse proxy without sleeps or external network dependencies.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type dialTimeoutErr struct{}
+
+func (dialTimeoutErr) Error() string   { return "i/o timeout" }
+func (dialTimeoutErr) Timeout() bool   { return true }
+func (dialTimeoutErr) Temporary() bool { return false }
+
+func dialOpError(err error) error {
+	return &net.OpError{Op: "dial", Net: "tcp", Err: err}
+}
+
+func newProxyWithTransport(t *testing.T, rt http.RoundTripper) (*httptest.Server, *health.Tracker) {
+	t.Helper()
+	engine := router.NewEngine()
+	if err := engine.AddRoute(testHost, "test-service", 1, router.RouteStatic); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	tracker := health.NewTracker()
+	h := NewHandler(engine, tracker)
+	h.rp.Transport = rt
+	srv := httptest.NewServer(LoggingMiddleware(h))
+	t.Cleanup(srv.Close)
+	return srv, tracker
+}
+
+// TestHealthClientCancelDuringDial verifies that cancelling the client while
+// the proxy is dialing the backend records no health observation at all — the
+// tracker stays StatusUnknown — even though the transport error wraps a
+// *net.OpError with Op == "dial". Fully event-driven: no sleeps.
+func TestHealthClientCancelDuringDial(t *testing.T) {
+	dialStarted := make(chan struct{})
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		select {
+		case <-dialStarted:
+		default:
+			close(dialStarted)
+		}
+		<-r.Context().Done()
+		return nil, dialOpError(r.Context().Err())
+	})
+	proxySrv, tracker := newProxyWithTransport(t, rt)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxySrv.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = testHost
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		resp, _ := http.DefaultClient.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dial never started")
+	}
+
+	cancel()
+
+	select {
+	case <-requestDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request goroutine did not finish")
+	}
+
+	if got := routeStatus(t, tracker); got != health.StatusUnknown {
+		t.Fatalf("client cancel during dial must record no observation, got %s", got)
+	}
+}
+
+// TestHealthClientDeadlineDuringDial verifies that an expiring client request
+// deadline during backend dial records no health observation — the tracker
+// stays StatusUnknown. Event-driven: the transport signals entry, the test
+// then waits for ctx expiry and request completion. No sleeps.
+func TestHealthClientDeadlineDuringDial(t *testing.T) {
+	dialStarted := make(chan struct{})
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		select {
+		case <-dialStarted:
+		default:
+			close(dialStarted)
+		}
+		<-r.Context().Done()
+		return nil, dialOpError(r.Context().Err())
+	})
+	proxySrv, tracker := newProxyWithTransport(t, rt)
+
+	// A comfortably long deadline: the test guarantees entry via dialStarted
+	// before expiry can matter, so 300ms is never the limiting factor.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxySrv.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = testHost
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		resp, _ := http.DefaultClient.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	// Guarantee the deadline expires *during* the dial, not before it.
+	select {
+	case <-dialStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dial never started")
+	}
+
+	select {
+	case <-requestDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request goroutine did not finish")
+	}
+
+	if got := routeStatus(t, tracker); got != health.StatusUnknown {
+		t.Fatalf("client deadline during dial must record no observation, got %s", got)
+	}
+}
+
+// TestHealthDialTimeoutMarksOffline verifies a genuine backend dial timeout —
+// with the client context still alive — retains the offline classification.
+func TestHealthDialTimeoutMarksOffline(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, dialOpError(dialTimeoutErr{})
+	})
+	proxySrv, tracker := newProxyWithTransport(t, rt)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp := proxyGet(t, ctx, proxySrv.URL, "/")
+	_ = resp.Body.Close()
+
+	if got := routeStatus(t, tracker); got != health.StatusOffline {
+		t.Fatalf("genuine dial timeout must mark offline, got %s", got)
 	}
 }

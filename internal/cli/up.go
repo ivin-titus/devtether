@@ -21,6 +21,7 @@ import (
 	"github.com/ivin-titus/devtether/internal/config"
 	"github.com/ivin-titus/devtether/internal/daemon"
 	"github.com/ivin-titus/devtether/internal/dns"
+	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/proxy"
@@ -118,10 +119,13 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return withRootDaemonHint(checkErr)
 	}
 
-	// 5. Create servers.
+	// 5. Create servers. The health tracker lives in this process only — the
+	// one that owns the proxy and serves IPC. The daemonize() parent exited
+	// above and never reaches this point.
+	tracker := health.NewTracker()
 	dnsServer := dns.NewServer(cfg.DNS, engine)
-	proxyServer := proxy.NewServer(cfg.Proxy, engine)
-	ipcDaemon := daemon.NewServer(engine, cancel, configPath)
+	proxyServer := proxy.NewServer(cfg.Proxy, engine, tracker)
+	ipcDaemon := daemon.NewServer(engine, tracker, cancel, configPath)
 
 	// --- DYNAMIC UI: STARTING ---
 	dim, reset := "\033[90m", "\033[0m"
@@ -185,12 +189,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return proxyServer.Serve(gCtx, proxyListener, proxyAddr)
 	})
 
-	if healthCheck := printStartupSummary(gCtx, cfg, startupInfo{
+	if startupCheck := printStartupSummary(gCtx, cfg, startupInfo{
 		proxyAddr: proxyAddr,
 		bindErr:   proxyServer.BindError(),
 		dnsAddr:   dnsAddr,
-	}); healthCheck != nil {
-		runWorker(healthCheck)
+	}, engine, tracker); startupCheck != nil {
+		runWorker(startupCheck)
 	}
 	g.Go(func() error {
 		for range workerCount {
@@ -254,16 +258,17 @@ func runUp(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// net.DialTimeout wrapper for health check testing
-func isBackendOnline(ctx context.Context, port int) bool {
-	target := fmt.Sprintf("127.0.0.1:%d", port)
-	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
-	conn, err := dialer.DialContext(ctx, "tcp", target)
-	if err == nil {
-		_ = conn.Close()
-		return true
+// startupTargets converts registered routes into health probe targets.
+func startupTargets(engine *router.Engine) []health.Target {
+	routes := engine.GetAllRoutes()
+	targets := make([]health.Target, 0, len(routes))
+	for _, rv := range routes {
+		targets = append(targets, health.Target{
+			Domain: rv.Domain,
+			Addr:   fmt.Sprintf("127.0.0.1:%d", rv.Port),
+		})
 	}
-	return false
+	return targets
 }
 
 // configMissingHint returns the shared recovery hint for a missing config file,
@@ -352,7 +357,7 @@ type startupInfo struct {
 	dnsAddr string
 }
 
-func printStartupSummary(ctx context.Context, cfg *config.Config, info startupInfo) func() error {
+func printStartupSummary(ctx context.Context, cfg *config.Config, info startupInfo, engine *router.Engine, tracker *health.Tracker) func() error {
 	// --- DYNAMIC UI: STARTED ---
 	dim, green, yellow, reset := "\033[90m", "\033[92m", "\033[33m", "\033[0m"
 	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
@@ -404,9 +409,6 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, info startupIn
 	}
 	sort.Strings(domains)
 
-	// Use int for status: 0=unknown, 1=online, 2=offline
-	status := make(map[string]int)
-
 	// Print the static routes table once
 	for _, domain := range domains {
 		port := cfg.Routes[domain]
@@ -418,63 +420,20 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, info startupIn
 	}
 	fmt.Println()
 
+	// One-shot bounded startup verification: probes each route once inside
+	// health's shared budget/concurrency policy, then exits. Unchecked routes
+	// keep StatusUnknown; failures never block daemon readiness.
 	return func() error {
-		// Initial check runs immediately
-		// Deferred feature: Replace with on-demand pinging via `devtether routes`
-		ticker := time.NewTicker(3000 * time.Millisecond)
-		defer ticker.Stop()
 		routeLog := logger.New("route")
-
-		check := func() {
-			g, _ := errgroup.WithContext(ctx)
-			type result struct {
-				domain string
-				online bool
-				state  int
-			}
-			results := make([]result, len(domains))
-
-			for i, domain := range domains {
-				idx, d := i, domain
-				g.Go(func() error {
-					port := cfg.Routes[d]
-					online := isBackendOnline(ctx, port)
-					newState := 2 // offline
-					if online {
-						newState = 1 // online
-					}
-					results[idx] = result{
-						domain: d,
-						online: online,
-						state:  newState,
-					}
-					return nil
-				})
-			}
-			_ = g.Wait()
-
-			// Print output deterministically and update state map
-			for _, r := range results {
-				if r.state != status[r.domain] {
-					status[r.domain] = r.state
-					if r.online {
-						routeLog.Info(fmt.Sprintf("● %s is online", r.domain))
-					} else {
-						routeLog.Info(fmt.Sprintf("○ %s is offline", r.domain))
-					}
-				}
+		for _, res := range tracker.CheckAll(ctx, startupTargets(engine)) {
+			switch res.Status {
+			case health.StatusOnline:
+				routeLog.Info(fmt.Sprintf("● %s is online", res.Domain))
+			case health.StatusOffline:
+				routeLog.Info(fmt.Sprintf("○ %s is offline", res.Domain))
 			}
 		}
-
-		check() // First immediate check
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-				check()
-			}
-		}
+		return nil
 	}
 }
 

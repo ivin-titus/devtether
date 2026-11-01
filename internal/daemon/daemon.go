@@ -21,9 +21,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
 	"github.com/ivin-titus/devtether/internal/router"
@@ -59,6 +61,7 @@ func SocketPath() string {
 // Server runs an HTTP API over a Unix domain socket for IPC communication.
 type Server struct {
 	engine     *router.Engine
+	tracker    *health.Tracker
 	httpServer *http.Server
 	socketPath string
 	configPath string
@@ -70,10 +73,12 @@ type Server struct {
 
 // NewServer initializes the IPC daemon. configPath is the config file the
 // daemon loaded; it is reported by /status so a client can identify which
-// project instance it is talking to.
-func NewServer(engine *router.Engine, cancel context.CancelFunc, configPath string) *Server {
+// project instance it is talking to. tracker holds the route health
+// observations shared by the startup check, proxy traffic, and diagnostics.
+func NewServer(engine *router.Engine, tracker *health.Tracker, cancel context.CancelFunc, configPath string) *Server {
 	return &Server{
 		engine:     engine,
+		tracker:    tracker,
 		cancelFunc: cancel,
 		socketPath: SocketPath(),
 		configPath: configPath,
@@ -177,6 +182,7 @@ func (s *Server) Listen(ctx context.Context) (net.Listener, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/routes", s.handleRoutes)
+	mux.HandleFunc("/routes/check", s.handleRoutesCheck)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/shutdown", s.handleShutdown)
 
@@ -233,6 +239,12 @@ type RouteResponse struct {
 	ServiceName string `json:"serviceName"`
 	Port        int    `json:"port"`
 	Type        string `json:"type"`
+	// Status is the latest observed backend reachability: online, offline,
+	// or unknown when no conclusive observation exists.
+	Status string `json:"status"`
+	// LastChecked is the RFC3339Nano timestamp of the latest observation,
+	// empty when none exists.
+	LastChecked string `json:"lastChecked,omitempty"`
 }
 
 // handleRoutes serves the GET /routes endpoint.
@@ -243,14 +255,79 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routes := s.engine.GetAllRoutes()
-	response := make([]RouteResponse, 0, len(routes))
-
+	domains := make([]string, 0, len(routes))
 	for _, target := range routes {
-		response = append(response, RouteResponse{
+		domains = append(domains, target.Domain)
+	}
+	observations := make(map[string]health.Observation, len(domains))
+	for _, res := range s.tracker.Snapshot(domains) {
+		observations[res.Domain] = res.Observation
+	}
+
+	response := make([]RouteResponse, 0, len(routes))
+	for _, target := range routes {
+		obs := observations[target.Domain]
+		rr := RouteResponse{
 			Domain:      target.Domain,
 			ServiceName: target.ServiceName,
 			Port:        target.Port,
 			Type:        string(target.Type),
+			Status:      string(obs.Status),
+		}
+		if !obs.CheckedAt.IsZero() {
+			rr.LastChecked = obs.CheckedAt.Format(time.RFC3339Nano)
+		}
+		response = append(response, rr)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// CheckResponse is the JSON representation of one route health probe result.
+// Latency is TCP connection latency in milliseconds — not HTTP response time.
+type CheckResponse struct {
+	Domain  string  `json:"domain"`
+	Backend string  `json:"backend"`
+	Status  string  `json:"status"`
+	Latency float64 `json:"latency_ms"`
+	Reason  string  `json:"reason,omitempty"`
+}
+
+// routeTargets converts engine routes into probe targets on loopback.
+func routeTargets(routes []router.RouteView) []health.Target {
+	targets := make([]health.Target, 0, len(routes))
+	for _, rv := range routes {
+		targets = append(targets, health.Target{
+			Domain: rv.Domain,
+			Addr:   net.JoinHostPort("127.0.0.1", strconv.Itoa(rv.Port)),
+		})
+	}
+	return targets
+}
+
+// handleRoutesCheck serves the POST /routes/check endpoint. It runs one
+// fresh bounded health-check pass over the daemon's active routes and
+// returns structured per-route results. Cancellation follows the request
+// context; the check itself enforces health's shared budget and concurrency.
+func (s *Server) handleRoutesCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	results := s.tracker.CheckAll(r.Context(), routeTargets(s.engine.GetAllRoutes()))
+
+	response := make([]CheckResponse, 0, len(results))
+	for _, res := range results {
+		response = append(response, CheckResponse{
+			Domain:  res.Domain,
+			Backend: res.Addr,
+			Status:  string(res.Status),
+			Latency: float64(res.Latency) / float64(time.Millisecond),
+			Reason:  res.Reason,
 		})
 	}
 

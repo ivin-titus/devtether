@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -19,6 +20,11 @@ func main() {
 	cli.SetBuildInfo(version, commit, date)
 	if err := cli.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		code := 1
+		var exitErr *cli.ExitError
+		if errors.As(err, &exitErr) {
+			code = exitErr.Code
+		}
+		os.Exit(code)
 	}
 }

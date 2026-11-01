@@ -163,7 +163,7 @@ To maintain strict Separation of Concerns and reduce cognitive overload, all log
 - `[proxy]`: Emitted strictly by `internal/proxy` (HTTP Reverse Proxy core, including raw `dial tcp` traces).
 - `[access]`: Reserved for the future access-control/traffic layer; it is not a current beta namespace.
 - `[daemon]`: Emitted by `internal/daemon` (IPC Unix socket server).
-- `[route]`: Emitted by `internal/router` and the `up.go` health checker (Global routing state changes).
+- `[route]`: Emitted by `internal/router` and the one-shot route health check in `up.go` (Global routing state changes).
 - `[devtether]`: Top-level CLI orchestration logs.
 
 Never cross these boundaries (e.g., the `router` package should never emit a `[proxy]` log).

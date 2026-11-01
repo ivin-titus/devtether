@@ -14,19 +14,22 @@ type Client struct {
 	httpc *http.Client
 }
 
+// socketClient builds an HTTP client bound to the daemon's Unix socket.
+func socketClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 2 * time.Second}
+				return d.DialContext(ctx, "unix", SocketPath())
+			},
+		},
+		Timeout: timeout,
+	}
+}
+
 // NewClient creates an IPC client that connects to the daemon's Unix socket.
 func NewClient() *Client {
-	return &Client{
-		httpc: &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					d := net.Dialer{Timeout: 2 * time.Second}
-					return d.DialContext(ctx, "unix", SocketPath())
-				},
-			},
-			Timeout: 5 * time.Second,
-		},
-	}
+	return &Client{httpc: socketClient(5 * time.Second)}
 }
 
 // ListRoutes fetches all active routes from the running daemon.
@@ -99,6 +102,34 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// CheckRoutes asks the daemon to run a fresh health check over its active
+// routes and returns the per-route results. It fails when no daemon is
+// reachable — callers must not silently fall back to another implementation.
+func (c *Client) CheckRoutes(ctx context.Context) ([]CheckResponse, error) {
+	// The daemon-side check budget is 5s; leave headroom for IPC overhead.
+	client := socketClient(10 * time.Second)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/routes/check", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to contact devtether daemon (is it running?): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+
+	var results []CheckResponse
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil, fmt.Errorf("failed to decode daemon response: %w", err)
+	}
+
+	return results, nil
+}
+
 // ShutdownAndWait sends a shutdown request and returns the response for the
 // caller to drain. The server's /shutdown handler flushes the response and
 // closes the connection immediately. The caller should drain the response body
@@ -109,15 +140,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 func (c *Client) ShutdownAndWait(ctx context.Context) (*http.Response, error) {
 	// Use a standard client timeout since the HTTP request itself completes
 	// immediately, delegating the long wait to WaitForExit.
-	longClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 2 * time.Second}
-				return d.DialContext(ctx, "unix", SocketPath())
-			},
-		},
-		Timeout: 20 * time.Second,
-	}
+	longClient := socketClient(20 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/shutdown", nil)
 	if err != nil {
