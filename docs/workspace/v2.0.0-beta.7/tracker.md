@@ -1,6 +1,11 @@
 # Release v2.0.0-beta.7
-**Status:** In Progress
+**Status:** Complete
 **Target:** TBD
+
+> **Closeout (2026-11-01):** The final open task (Phase 4 Polish) passed the
+> owner's manual verification steps listed in its entry. All active tasks are
+> complete; deferred items remain in Scope Discoveries. Recorded by Devin on
+> the owner's behalf following their verification confirmation.
 
 ## Active Tasks
 <!-- Valid Categories: [Bug Fix], [Feature], [Chore], [Security], [Docs] -->
@@ -118,10 +123,10 @@
   *Blocked by:* Subphase 3.4
   *Description:* Historical beta.7 documentation synchronization pass. Its original scope included architecture/README/help synchronization and recording the ADR-008 streaming exemption, watchdog exception, fsnotify rationale, and Windows boundary. Current documentation must still be verified against the source tree; later repository audits may supersede this historical completion record.
 
-- [ ] **[Feature] Phase 4 Polish (DNS Wizard & CLI Cleanups)**
+- [x] **[Feature] Phase 4 Polish (DNS Wizard & CLI Cleanups)**
   *Assignee:* `@ivin-titus (via Cline: Deepseek v4.1 Flash)`
   *Priority:* High
-  *Status:* **Implemented — Awaiting Human Verification.** The checkbox intentionally remains open until the system owner completes the manual verification steps below.
+  *Status:* **Complete.** The system owner completed the manual verification steps below on 2026-11-01; task closed per the human-verification gate.
   *Description:* Enhance `devtether init` with a smart OS-aware DNS configuration wizard (`systemd-resolved`, `macOS resolver`, `dnsmasq`). Clean up Cobra CLI help generation by hiding the `completion` command and removing redundant manual command lists from `Long` descriptions. Expand `scripts/uninstall.sh` to remove generated DNS configs. Strictly enforce `.localhost` structure in config via regex to block wildcards and resolve QA-2. Resolve orphaned root sockets (QA-1) via `kill -0` liveness checks and proactive unlinking.
   *Delivered:*
     - `internal/cli/init.go`: `detectDNSProvider` + `applyDNSConfig` + a shared `runSudo` privileged-command helper (also used by `applySetcap`); the DNS prompt is interactive-only and skipped when no supported resolver is detected.

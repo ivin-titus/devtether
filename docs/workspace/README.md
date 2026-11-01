@@ -16,9 +16,9 @@ When an historical workspace record conflicts with the current source tree, curr
 
 ## 2. Active release pointers
 
-- **Current release:** `v2.0.0-beta.7` — see [tracker](v2.0.0-beta.7/tracker.md)
-- **Previous release:** recorded in [CHANGELOG.md](../../CHANGELOG.md); older release workspaces may not be retained in this branch.
-- **Next release:** `v2.0.0-beta.8` is a future beta line, not currently planned.
+- **Current release:** `v2.0.0-beta.8` — see [tracker](v2.0.0-beta.8/tracker.md)
+- **Previous release:** `v2.0.0-beta.7` — recorded in [CHANGELOG.md](../../CHANGELOG.md) and its [workspace](v2.0.0-beta.7/tracker.md); older release workspaces may not be retained in this branch.
+- **Next release:** TBD.
 
 ## 3. AI accountability
 
