@@ -100,7 +100,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	sort.Strings(domains)
 	for _, domain := range domains {
 		port := cfg.Routes[domain]
-		if addErr := engine.AddRoute(domain, "static", port, router.RouteStatic); addErr != nil {
+		if _, addErr := engine.AddRoute(domain, "static", port, router.RouteStatic); addErr != nil {
 			return fmt.Errorf("failed to register route %s: %w", domain, addErr)
 		}
 		routeLog.Debug(fmt.Sprintf("%s → 127.0.0.1:%d", domain, port))
@@ -126,6 +126,13 @@ func runUp(cmd *cobra.Command, args []string) error {
 	dnsServer := dns.NewServer(cfg.DNS, engine)
 	proxyServer := proxy.NewServer(cfg.Proxy, engine, tracker)
 	ipcDaemon := daemon.NewServer(engine, tracker, cancel, configPath)
+
+	// Register the static routes' incarnations before binds and workers
+	// start, so health observations are recorded against them from the
+	// first probe or request.
+	for _, rv := range engine.GetAllRoutes() {
+		tracker.Register(rv.Domain, rv.Incarnation)
+	}
 
 	// --- DYNAMIC UI: STARTING ---
 	dim, reset := "\033[90m", "\033[0m"
@@ -264,8 +271,9 @@ func startupTargets(engine *router.Engine) []health.Target {
 	targets := make([]health.Target, 0, len(routes))
 	for _, rv := range routes {
 		targets = append(targets, health.Target{
-			Domain: rv.Domain,
-			Addr:   fmt.Sprintf("127.0.0.1:%d", rv.Port),
+			Domain:      rv.Domain,
+			Addr:        fmt.Sprintf("127.0.0.1:%d", rv.Port),
+			Incarnation: rv.Incarnation,
 		})
 	}
 	return targets
@@ -277,11 +285,13 @@ func configMissingHint(path string) error {
 	return fmt.Errorf("%s not found. Create one with:\n\n  devtether init", path)
 }
 
-// noRoutesHint points the user at their config file when it exists but defines
-// no routes. `devtether init` cannot help here — it exits non-zero when the
-// file already exists.
+// noRoutesHint points the user at both route workflows when the config file
+// exists but defines no static routes: persistent routes in the YAML (which
+// need a restart) or ephemeral live routes on the running daemon.
+// `devtether init` cannot help here — it exits non-zero when the file
+// already exists.
 func noRoutesHint(path string) string {
-	return fmt.Sprintf("Edit %s to add routes, then restart the daemon", path)
+	return fmt.Sprintf("Add static routes to %s (requires a daemon restart), or add an ephemeral live route to the running daemon: devtether routes add <domain> <port>", path)
 }
 
 // dnsUnavailableNotice explains the consequence of a total DNS bind failure.

@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ivin-titus/devtether/internal/netutil"
 )
 
 // Config is the top-level schema for devtether.yaml.
@@ -176,23 +178,55 @@ func (c *Config) validate() error {
 // and wildcard abuse is rejected.
 var localhostRouteName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.localhost$`)
 
-// validateRoutes checks that all static route entries are valid.
+// ValidateRouteDomain checks that a route domain is valid: non-empty, free
+// of surrounding whitespace, and a DNS name ending in .localhost. It is the
+// domain-only half of ValidateRoute, shared by endpoints that validate a
+// domain without a port (e.g. conditional route removal).
+func ValidateRouteDomain(domain string) error {
+	if domain == "" {
+		return fmt.Errorf("empty domain name is not allowed")
+	}
+	if strings.TrimSpace(domain) != domain {
+		return fmt.Errorf("domain %q must not have surrounding whitespace", domain)
+	}
+	// DNS names are case-insensitive (RFC 4343) and the router lowercases
+	// keys on registration, so enforce structure on the normalized form.
+	if !localhostRouteName.MatchString(strings.ToLower(domain)) {
+		return fmt.Errorf("domain %q must be a DNS name ending in .localhost (no wildcards; e.g. app.localhost)", domain)
+	}
+	return nil
+}
+
+// ValidateRoute checks that a single route entry has a valid domain and
+// port. It is the shared validation seam for both YAML configuration and
+// runtime route creation, so both paths enforce exactly the same
+// restrictions (ADR-003 parity). The domain is validated literally, before
+// any normalization.
+func ValidateRoute(domain string, port int) error {
+	if err := ValidateRouteDomain(domain); err != nil {
+		return err
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port %d for domain '%s' is out of valid range (1-65535)", port, domain)
+	}
+	return nil
+}
+
+// validateRoutes checks that all static route entries are valid and that no
+// two entries share a normalized domain (ADR-007). The engine keys routes by
+// normalized domain, so case-variant duplicates would otherwise pass config
+// validation and fail daemon startup with ErrRouteExists.
 func (c *Config) validateRoutes() error {
+	seen := make(map[string]string, len(c.Routes))
 	for domain, port := range c.Routes {
-		if domain == "" {
-			return fmt.Errorf("routes: empty domain name is not allowed")
+		if err := ValidateRoute(domain, port); err != nil {
+			return fmt.Errorf("routes: %w", err)
 		}
-		if strings.TrimSpace(domain) != domain {
-			return fmt.Errorf("routes: domain %q must not have surrounding whitespace", domain)
+		normalized := netutil.NormalizeHost(domain)
+		if first, dup := seen[normalized]; dup {
+			return fmt.Errorf("routes: duplicate domain %q: %q and %q normalize to the same route", normalized, first, domain)
 		}
-		// DNS names are case-insensitive (RFC 4343) and the router lowercases
-		// keys on registration, so enforce structure on the normalized form.
-		if !localhostRouteName.MatchString(strings.ToLower(domain)) {
-			return fmt.Errorf("routes: domain %q must be a DNS name ending in .localhost (no wildcards; e.g. app.localhost)", domain)
-		}
-		if port < 1 || port > 65535 {
-			return fmt.Errorf("routes: port %d for domain '%s' is out of valid range (1-65535)", port, domain)
-		}
+		seen[normalized] = domain
 	}
 	return nil
 }

@@ -1,11 +1,15 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -160,4 +164,95 @@ func (c *Client) ShutdownAndWait(ctx context.Context) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// APIError is returned when the daemon answers a mutating request with a
+// non-success HTTP status. It carries the status code and a trimmed body so
+// callers can distinguish validation, auth, conflict, and missing-route
+// failures explicitly instead of string matching.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("daemon returned status %d", e.StatusCode)
+	}
+	return fmt.Sprintf("daemon returned status %d: %s", e.StatusCode, e.Body)
+}
+
+// apiError drains a bounded amount of the error response body and wraps it
+// in an APIError. The body is diagnostic only; IPC error bodies are tiny.
+func apiError(resp *http.Response) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		body = nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+}
+
+// createRoutePayload is the strict JSON body accepted by POST /routes.
+type createRoutePayload struct {
+	Domain string `json:"domain"`
+	Port   int    `json:"port"`
+}
+
+// AddRoute asks the running daemon to create a live route for domain →
+// 127.0.0.1:port. It returns the created route including its incarnation,
+// which clients must retain for conditional removal. Live routes are
+// ephemeral: they are discarded when the daemon stops.
+func (c *Client) AddRoute(ctx context.Context, domain string, port int) (*RouteResponse, error) {
+	payload, err := json.Marshal(createRoutePayload{Domain: domain, Port: port})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode route: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/routes", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if nonce, nonceErr := readNonce(); nonceErr == nil {
+		req.Header.Set("X-Devtether-Nonce", nonce)
+	}
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to contact devtether daemon (is it running?): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		return nil, apiError(resp)
+	}
+
+	var route RouteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&route); err != nil {
+		return nil, fmt.Errorf("failed to decode daemon response: %w", err)
+	}
+	return &route, nil
+}
+
+// RemoveRoute asks the running daemon to remove the route for domain, but
+// only if its incarnation still equals inc — the incarnation obtained from
+// ListRoutes. A mismatch means the route changed after it was listed; the
+// caller must re-list and re-confirm rather than retry blindly.
+func (c *Client) RemoveRoute(ctx context.Context, domain string, inc uint64) error {
+	u := fmt.Sprintf("http://unix/routes/%s?inc=%d", url.PathEscape(domain), inc)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	if nonce, nonceErr := readNonce(); nonceErr == nil {
+		req.Header.Set("X-Devtether-Nonce", nonce)
+	}
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to contact devtether daemon (is it running?): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent {
+		return apiError(resp)
+	}
+	return nil
 }

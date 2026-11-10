@@ -15,7 +15,7 @@ import (
 // Regression test: previously returned NOERROR with empty answers.
 func TestNXDOMAIN(t *testing.T) {
 	engine := router.NewEngine()
-	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
+	_, _ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
 	srv, addr := startTestServer(t, engine)
 	_ = srv
@@ -78,10 +78,10 @@ func TestNXDOMAIN(t *testing.T) {
 // global DefaultServeMux. Two servers must coexist without conflicts.
 func TestDedicatedMux(t *testing.T) {
 	engine1 := router.NewEngine()
-	_ = engine1.AddRoute("app1.localhost", "app1", 3001, router.RouteStatic)
+	_, _ = engine1.AddRoute("app1.localhost", "app1", 3001, router.RouteStatic)
 
 	engine2 := router.NewEngine()
-	_ = engine2.AddRoute("app2.localhost", "app2", 3002, router.RouteStatic)
+	_, _ = engine2.AddRoute("app2.localhost", "app2", 3002, router.RouteStatic)
 
 	_, addr1 := startTestServer(t, engine1)
 	_, addr2 := startTestServer(t, engine2)
@@ -128,7 +128,7 @@ func TestDedicatedMux(t *testing.T) {
 // Run with -race to confirm.
 func TestConcurrentStartShutdown(t *testing.T) {
 	engine := router.NewEngine()
-	_ = engine.AddRoute("test.localhost", "test", 8080, router.RouteStatic)
+	_, _ = engine.AddRoute("test.localhost", "test", 8080, router.RouteStatic)
 
 	cfg := config.DNSConfig{
 		Bind: "127.0.0.1:0", // Let OS pick port
@@ -264,7 +264,7 @@ func TestHandleRequestNonQuery(t *testing.T) {
 // TestNonARecordQuery verifies that non-A queries (e.g. AAAA, MX) get NOERROR (NODATA) for valid routes.
 func TestNonARecordQuery(t *testing.T) {
 	engine := router.NewEngine()
-	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
+	_, _ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
 	_, addr := startTestServer(t, engine)
 
@@ -292,7 +292,7 @@ func TestNonARecordQuery(t *testing.T) {
 
 func TestCaseSensitivity(t *testing.T) {
 	engine := router.NewEngine()
-	_ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
+	_, _ = engine.AddRoute("myapp.localhost", "myapp", 3000, router.RouteStatic)
 
 	_, addr := startTestServer(t, engine)
 

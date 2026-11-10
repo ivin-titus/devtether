@@ -2,7 +2,7 @@
 
 **Status:** Accepted  
 **Date:** 2026-05-30  
-**Reconciled:** 2026-09-28
+**Reconciled:** 2026-11-10
 
 ## Context
 
@@ -69,8 +69,10 @@ These are **planning examples only**.
 1. Keep the current schema small and explicit.
 2. Keep future engine configuration isolated by top-level section.
 3. Reject unknown fields so documentation drift fails loudly.
-4. Do not add live config reload until there is a concrete need; current route changes require a restart.
+4. Do not add YAML live-reload or runtime persistence until there is a concrete need. Since beta.8, route creation and removal are supported at runtime through the daemon IPC (`POST /routes`, `DELETE /routes/{domain}?inc=N`) without editing or reloading `devtether.yaml`; this runtime-only mutation is not configuration reload and never writes the file. Editing `routes:` in `devtether.yaml` still requires a daemon restart.
 
 ## Consequences
 
 One configuration file remains easy to version while strict decoding protects the current binary from silently accepting stale documentation examples.
+
+Reconciled 2026-11-10: runtime route mutation (beta.8) is memory-only and deliberately outside this schema's persistence/reload boundary; the file remains the sole source of static routes.

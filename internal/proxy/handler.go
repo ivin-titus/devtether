@@ -68,8 +68,12 @@ func NewHandler(resolver router.Resolver, tracker *health.Tracker) *Handler {
 		ModifyResponse: func(resp *http.Response) error {
 			host, _ := resp.Request.Context().Value(hostCtxKey).(string)
 			gen, _ := resp.Request.Context().Value(genCtxKey).(uint64)
+			var inc uint64
+			if target, ok := resp.Request.Context().Value(targetCtxKey).(router.Target); ok {
+				inc = target.Incarnation
+			}
 			if host != "" {
-				h.tracker.Observe(host, gen, health.Observation{
+				h.tracker.Observe(host, inc, gen, health.Observation{
 					Status:    health.StatusOnline,
 					CheckedAt: time.Now(),
 				})
@@ -86,6 +90,11 @@ func NewHandler(resolver router.Resolver, tracker *health.Tracker) *Handler {
 				panic(http.ErrAbortHandler)
 			}
 			host, _ := req.Context().Value(hostCtxKey).(string)
+			target, ok := req.Context().Value(targetCtxKey).(router.Target)
+			var inc uint64
+			if ok {
+				inc = target.Incarnation
+			}
 			// If the incoming request context is already done (client
 			// cancelled or its deadline expired), the transport error —
 			// which may wrap an OpError with Op == "dial" — reflects
@@ -95,13 +104,12 @@ func NewHandler(resolver router.Resolver, tracker *health.Tracker) *Handler {
 				// offline. Post-connect failures (mid-stream resets,
 				// header timeouts) are inconclusive.
 				gen, _ := req.Context().Value(genCtxKey).(uint64)
-				h.tracker.Observe(host, gen, health.Observation{
+				h.tracker.Observe(host, inc, gen, health.Observation{
 					Status:    health.StatusOffline,
 					CheckedAt: time.Now(),
 					Reason:    "connect failed",
 				})
 			}
-			target, ok := req.Context().Value(targetCtxKey).(router.Target)
 
 			var targetURL string
 			var port int
@@ -163,10 +171,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		renderErrorPage(w, http.StatusNotFound, ErrorPageData{
 			StatusCode: http.StatusNotFound,
 			StatusText: "Route Not Found",
-			Message:    fmt.Sprintf("DevTether could not find a routing rule for '%s'.", r.Host),
+			Message:    fmt.Sprintf("DevTether has no route registered for '%s' in the running daemon.", r.Host),
 			Hint: &ErrorHint{
-				Title:   "Route Not Configured",
-				Message: "Check your devtether.yaml file and ensure the route is defined and spelling is correct. Run 'devtether routes' to see active routes.",
+				Title: "Route Not Registered",
+				Message: "Static routes come from devtether.yaml; live routes are added at runtime. " +
+					"Check devtether.yaml for a static route (a route removed at runtime returns on daemon restart), " +
+					"or create a live route with 'devtether routes add <domain> <port>'. " +
+					"Run 'devtether routes' to see what the daemon has registered.",
 			},
 		})
 		return

@@ -74,7 +74,7 @@ admin    → admin.localhost
 monitor  → monitor.localhost
 ```
 
-The current beta uses a static `devtether.yaml` route table and requires a daemon restart after route changes.
+The current beta uses a static `devtether.yaml` route table. Editing it requires a daemon restart, but the running daemon also accepts runtime route changes: `devtether routes add` creates ephemeral live routes and `devtether routes remove` removes static or live routes, in both cases without editing the YAML file or restarting.
 
 ---
 
@@ -89,6 +89,8 @@ routes:
   web.localhost: 3222
   api.localhost: 8042
 ```
+
+Routes can also be managed at runtime: `devtether routes add` creates an ephemeral live route and `devtether routes remove` removes a static or live route from the running daemon. Live routes exist only in the running daemon — they are discarded on stop and never written to `devtether.yaml`; removing a static route is runtime-only and the route returns on the next start.
 
 ### Embedded DNS
 
@@ -117,6 +119,9 @@ Current commands:
 - `down` / `stop`
 - `status`
 - `routes`
+- `routes add <domain> <port>`
+- `routes remove <domain>`
+- `routes --check`
 - `logs`
 - `doctor`
 - `version`

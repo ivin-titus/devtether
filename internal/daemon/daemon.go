@@ -12,19 +12,23 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/ivin-titus/devtether/internal/config"
 	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/logger"
 	"github.com/ivin-titus/devtether/internal/netutil"
@@ -183,6 +187,7 @@ func (s *Server) Listen(ctx context.Context) (net.Listener, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/routes", s.handleRoutes)
 	mux.HandleFunc("/routes/check", s.handleRoutesCheck)
+	mux.HandleFunc("/routes/{domain}", s.handleRouteDomain)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/shutdown", s.handleShutdown)
 
@@ -239,6 +244,10 @@ type RouteResponse struct {
 	ServiceName string `json:"serviceName"`
 	Port        int    `json:"port"`
 	Type        string `json:"type"`
+	// Incarnation identifies the current lifetime of the route. It is the
+	// authoritative version token for conditional deletion (DELETE
+	// /routes/{domain}?inc=N); opaque to clients.
+	Incarnation uint64 `json:"incarnation"`
 	// Status is the latest observed backend reachability: online, offline,
 	// or unknown when no conclusive observation exists.
 	Status string `json:"status"`
@@ -247,13 +256,22 @@ type RouteResponse struct {
 	LastChecked string `json:"lastChecked,omitempty"`
 }
 
-// handleRoutes serves the GET /routes endpoint.
+// handleRoutes serves the GET /routes listing and POST /routes creation
+// endpoints. Listing has no nonce requirement (read-only diagnostics); the
+// mutating POST is handled by handleRouteCreate below via the shared
+// dispatch, keeping method checks per-operation.
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleRoutesList(w, r)
+	case http.MethodPost:
+		s.handleRouteCreate(w, r)
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
+}
 
+func (s *Server) handleRoutesList(w http.ResponseWriter, r *http.Request) {
 	routes := s.engine.GetAllRoutes()
 	domains := make([]string, 0, len(routes))
 	for _, target := range routes {
@@ -272,6 +290,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 			ServiceName: target.ServiceName,
 			Port:        target.Port,
 			Type:        string(target.Type),
+			Incarnation: target.Incarnation,
 			Status:      string(obs.Status),
 		}
 		if !obs.CheckedAt.IsZero() {
@@ -301,8 +320,9 @@ func routeTargets(routes []router.RouteView) []health.Target {
 	targets := make([]health.Target, 0, len(routes))
 	for _, rv := range routes {
 		targets = append(targets, health.Target{
-			Domain: rv.Domain,
-			Addr:   net.JoinHostPort("127.0.0.1", strconv.Itoa(rv.Port)),
+			Domain:      rv.Domain,
+			Addr:        net.JoinHostPort("127.0.0.1", strconv.Itoa(rv.Port)),
+			Incarnation: rv.Incarnation,
 		})
 	}
 	return targets
@@ -385,8 +405,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("X-Devtether-Nonce") != s.nonce {
-		http.Error(w, "invalid IPC nonce", http.StatusForbidden)
+	if !s.checkNonce(w, r) {
 		return
 	}
 
@@ -400,4 +419,257 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger graceful shutdown of all daemon subsystems.
 	s.cancelFunc()
+}
+
+// checkNonce enforces the shared IPC nonce contract (ADR-003). It writes a
+// 403 response and returns false when the header is missing or wrong.
+func (s *Server) checkNonce(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("X-Devtether-Nonce") != s.nonce {
+		http.Error(w, "invalid IPC nonce", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// maxRouteBodyBytes bounds POST /routes bodies; route creation payloads are
+// tiny, so anything larger is rejected before parsing (413).
+const maxRouteBodyBytes = 8 << 10
+
+// createRouteRequest is the strict JSON shape accepted by POST /routes.
+// Exactly these two keys, exact casing; decoded via the Token stream in
+// decodeCreateRouteRequest so duplicates, case variants, unknown fields,
+// null, non-objects, and trailing data are all rejected.
+type createRouteRequest struct {
+	Domain string
+	Port   int
+}
+
+// decodeCreateRouteRequest parses the request body as exactly one JSON
+// object {"domain": string, "port": integer} with no duplicate or unknown
+// keys and no trailing data. Any deviation is a client error (400).
+func decodeCreateRouteRequest(body []byte) (createRouteRequest, error) {
+	var req createRouteRequest
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+
+	tok, err := dec.Token()
+	if err != nil {
+		return req, err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return req, errNotJSONObject
+	}
+
+	seen := make(map[string]bool, 2)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return req, err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return req, errNotJSONObject
+		}
+		if key != "domain" && key != "port" {
+			return req, errUnknownField
+		}
+		if seen[key] {
+			return req, errDuplicateField
+		}
+		seen[key] = true
+
+		valTok, err := dec.Token()
+		if err != nil {
+			return req, err
+		}
+		switch key {
+		case "domain":
+			domain, ok := valTok.(string)
+			if !ok {
+				return req, errWrongType
+			}
+			req.Domain = domain
+		case "port":
+			num, ok := valTok.(json.Number)
+			if !ok {
+				return req, errWrongType
+			}
+			port, err := parsePortNumber(num)
+			if err != nil {
+				return req, err
+			}
+			req.Port = port
+		}
+	}
+
+	// Consume the closing brace, then require end of stream.
+	if _, err := dec.Token(); err != nil {
+		return req, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err == nil {
+			return req, errTrailingData
+		}
+		return req, err
+	}
+
+	if !seen["domain"] || !seen["port"] {
+		return req, errMissingField
+	}
+	return req, nil
+}
+
+// Sentinel decode errors keep handler mapping trivial: every decode failure
+// is a 400 regardless of which strictness rule tripped.
+var (
+	errNotJSONObject  = errors.New("body must be a JSON object")
+	errUnknownField   = errors.New("unknown field")
+	errDuplicateField = errors.New("duplicate field")
+	errWrongType      = errors.New("wrong field type")
+	errMissingField   = errors.New("missing required field")
+	errTrailingData   = errors.New("trailing data after JSON object")
+)
+
+// digitsOnly matches ^[0-9]+$ — rejects signs, fractions, exponents.
+var digitsOnly = regexp.MustCompile(`^[0-9]+$`)
+
+// parsePortNumber converts a json.Number port to an int with overflow
+// checking. Non-integer forms are rejected before conversion; conversion
+// failure is a client error, never a server error.
+func parsePortNumber(num json.Number) (int, error) {
+	if !digitsOnly.MatchString(num.String()) {
+		return 0, errWrongType
+	}
+	port, err := strconv.Atoi(num.String())
+	if err != nil {
+		return 0, errWrongType
+	}
+	return port, nil
+}
+
+// handleRouteCreate serves POST /routes: strict validation, atomic engine
+// insertion, then tracker registration with the returned incarnation.
+func (s *Server) handleRouteCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.checkNonce(w, r) {
+		return
+	}
+
+	// Read the bounded body in full before parsing so any oversized body is
+	// a 413 regardless of where a strictness violation would appear.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRouteBodyBytes))
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	req, err := decodeCreateRouteRequest(body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err = config.ValidateRoute(req.Domain, req.Port); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	inc, err := s.engine.AddRoute(req.Domain, "live", req.Port, router.RouteLive)
+	if err != nil {
+		if errors.Is(err, router.ErrRouteExists) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Engine → tracker ordering: register only after the engine accepts the
+	// route, keyed by the same normalized domain the engine stores.
+	s.tracker.Register(netutil.NormalizeHost(req.Domain), inc)
+
+	resp := RouteResponse{
+		Domain:      netutil.NormalizeHost(req.Domain),
+		ServiceName: "live",
+		Port:        req.Port,
+		Type:        string(router.RouteLive),
+		Incarnation: inc,
+		Status:      string(health.StatusUnknown),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleRouteDomain serves DELETE /routes/{domain}?inc=N. The path domain
+// arrives percent-decoded but unnormalized; validation runs on the literal
+// value before any engine call. The incarnation query parameter is the
+// sole delete condition — there is no unconditional removal path.
+func (s *Server) handleRouteDomain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.checkNonce(w, r) {
+		return
+	}
+
+	pathDomain := r.PathValue("domain")
+	if err := config.ValidateRouteDomain(pathDomain); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Validate the literal path value first; the engine keys routes by
+	// normalized (lowercase) domain, so resolve and tombstone by the same
+	// normalized form AddRoute stored.
+	domain := netutil.NormalizeHost(pathDomain)
+
+	inc, ok := parseIncarnationQuery(r)
+	if !ok {
+		http.Error(w, "inc query parameter must be a single canonical positive integer", http.StatusBadRequest)
+		return
+	}
+
+	removedInc, removed := s.engine.RemoveRoute(domain, inc)
+	if !removed {
+		// RemoveRoute is always attempted first; only on failure resolve to
+		// distinguish a stale incarnation (409) from an absent route (404).
+		if _, exists := s.engine.Resolve(domain); exists {
+			http.Error(w, "route changed — re-confirm with a fresh incarnation", http.StatusConflict)
+			return
+		}
+		http.Error(w, "route not found", http.StatusNotFound)
+		return
+	}
+	s.tracker.Unregister(domain, removedInc)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// incGrammar matches the canonical positive decimal form [1-9][0-9]*: no
+// sign, no leading zeros, no whitespace. Zero, negative, and malformed
+// values are rejected before parsing.
+var incGrammar = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+// parseIncarnationQuery extracts exactly one canonical `inc` value from the
+// query string. Duplicate parameters, missing/empty values, and any
+// non-canonical form (leading zeros, signs, whitespace, hex, floats,
+// exponents, overflow) are rejected.
+func parseIncarnationQuery(r *http.Request) (uint64, bool) {
+	vals, present := r.URL.Query()["inc"]
+	if !present || len(vals) != 1 {
+		return 0, false
+	}
+	v := vals[0]
+	if !incGrammar.MatchString(v) {
+		return 0, false
+	}
+	inc, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return inc, true
 }

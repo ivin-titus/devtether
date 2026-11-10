@@ -154,6 +154,24 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
+			name:    "case-variant duplicate domains rejected (different ports)",
+			yaml:    "routes:\n  App.localhost: 3000\n  app.localhost: 4000",
+			wantErr: true,
+			errMsg:  "duplicate domain",
+		},
+		{
+			name:    "case-variant duplicate domains rejected (same port)",
+			yaml:    "routes:\n  App.Localhost: 3000\n  app.localhost: 3000",
+			wantErr: true,
+			errMsg:  "duplicate domain",
+		},
+		{
+			name:    "exact duplicate route key rejected by parser",
+			yaml:    "routes:\n  app.localhost: 3000\n  app.localhost: 4000",
+			wantErr: true,
+			errMsg:  "already defined",
+		},
+		{
 			name: "empty file",
 			yaml: "",
 			check: func(c *Config) error {
@@ -423,6 +441,106 @@ func TestRoutePortPolicy(t *testing.T) {
 	}
 }
 
+// TestValidateRoute covers the exported shared validation seam directly and
+// asserts it enforces exactly the same acceptance set as the YAML route
+// validation that delegates to it.
+func TestValidateRoute(t *testing.T) {
+	tests := []struct {
+		name      string
+		domain    string
+		port      int
+		wantValid bool
+	}{
+		{name: "simple", domain: "app.localhost", port: 3000, wantValid: true},
+		{name: "nested subdomain", domain: "a.b.c.localhost", port: 1, wantValid: true},
+		{name: "uppercase normalized", domain: "APP.LOCALHOST", port: 65535, wantValid: true},
+		{name: "empty domain", domain: "", port: 3000, wantValid: false},
+		{name: "surrounding whitespace", domain: " app.localhost ", port: 3000, wantValid: false},
+		{name: "wrong TLD", domain: "app.internal", port: 3000, wantValid: false},
+		{name: "wildcard", domain: "*.localhost", port: 3000, wantValid: false},
+		{name: "bare localhost", domain: "localhost", port: 3000, wantValid: false},
+		{name: "port zero", domain: "app.localhost", port: 0, wantValid: false},
+		{name: "port too high", domain: "app.localhost", port: 65536, wantValid: false},
+		{name: "port negative", domain: "app.localhost", port: -1, wantValid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			directErr := ValidateRoute(tt.domain, tt.port)
+			viaConfigErr := (&Config{Routes: map[string]int{tt.domain: tt.port}}).validateRoutes()
+
+			if tt.wantValid {
+				if directErr != nil {
+					t.Fatalf("ValidateRoute(%q, %d) = %v, want nil", tt.domain, tt.port, directErr)
+				}
+				if viaConfigErr != nil {
+					t.Fatalf("validateRoutes for same entry = %v, want nil (parity)", viaConfigErr)
+				}
+				return
+			}
+			if directErr == nil {
+				t.Fatalf("ValidateRoute(%q, %d) = nil, want error", tt.domain, tt.port)
+			}
+			if viaConfigErr == nil {
+				t.Fatalf("validateRoutes for same entry = nil, want error (parity)")
+			}
+		})
+	}
+}
+
+// TestValidateRoutesRejectsNormalizedDuplicates pins the guard that keeps
+// LoadConfig from accepting route pairs that normalize to the same engine key
+// (ADR-007): they would otherwise fail daemon startup with ErrRouteExists.
+func TestValidateRoutesRejectsNormalizedDuplicates(t *testing.T) {
+	tests := []struct {
+		name    string
+		routes  map[string]int
+		wantErr []string // substrings that must all appear in the error
+	}{
+		{
+			name:    "case variants, different ports",
+			routes:  map[string]int{"App.localhost": 3000, "app.localhost": 4000},
+			wantErr: []string{"duplicate domain", "app.localhost", "App.localhost"},
+		},
+		{
+			name:    "case variants, same port",
+			routes:  map[string]int{"App.Localhost": 3000, "app.localhost": 3000},
+			wantErr: []string{"duplicate domain", "app.localhost", "App.Localhost"},
+		},
+		{
+			name:    "nested labels, mixed case",
+			routes:  map[string]int{"API.Dev.Localhost": 3000, "api.dev.localhost": 4000},
+			wantErr: []string{"duplicate domain", "api.dev.localhost", "API.Dev.Localhost"},
+		},
+		{
+			name:    "distinct domains accepted",
+			routes:  map[string]int{"app.localhost": 3000, "api.localhost": 4000},
+			wantErr: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (&Config{Routes: tt.routes}).validateRoutes()
+
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("validateRoutes() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateRoutes() = nil, want error containing %q", tt.wantErr)
+			}
+			for _, sub := range tt.wantErr {
+				if !strings.Contains(err.Error(), sub) {
+					t.Fatalf("validateRoutes() error = %q, want it to contain %q", err.Error(), sub)
+				}
+			}
+		})
+	}
+}
+
 func TestParseDuration(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -441,5 +559,72 @@ func TestParseDuration(t *testing.T) {
 				t.Errorf("ParseDuration(%q, %v) = %v, want %v", tt.input, tt.fallback, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestValidateRouteDomain covers the domain-only validation seam used by
+// conditional route removal (DELETE /routes/{domain}), which has no port to
+// validate. It must enforce exactly the same domain policy as
+// ValidateRoute's domain half.
+func TestValidateRouteDomain(t *testing.T) {
+	tests := []struct {
+		name      string
+		domain    string
+		wantValid bool
+	}{
+		{name: "simple", domain: "app.localhost", wantValid: true},
+		{name: "nested subdomain", domain: "a.b.c.localhost", wantValid: true},
+		{name: "uppercase normalized", domain: "APP.LOCALHOST", wantValid: true},
+		{name: "trailing dot stripped by router but literal kept", domain: "app.localhost.", wantValid: false},
+		{name: "empty domain", domain: "", wantValid: false},
+		{name: "surrounding whitespace", domain: " app.localhost ", wantValid: false},
+		{name: "internal whitespace", domain: "app. localhost", wantValid: false},
+		{name: "wrong TLD", domain: "app.internal", wantValid: false},
+		{name: "wildcard", domain: "*.localhost", wantValid: false},
+		{name: "bare localhost", domain: "localhost", wantValid: false},
+		{name: "slash from percent decode", domain: "a/b", wantValid: false},
+		{name: "port suffix", domain: "app.localhost:3000", wantValid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domainErr := ValidateRouteDomain(tt.domain)
+			routeErr := ValidateRoute(tt.domain, 3000)
+
+			// Parity: the domain-only helper and the full validator must
+			// agree on domain acceptance for a valid port.
+			if (domainErr == nil) != (routeErr == nil) {
+				t.Fatalf("parity mismatch: ValidateRouteDomain(%q) = %v, ValidateRoute(%q, 3000) = %v",
+					tt.domain, domainErr, tt.domain, routeErr)
+			}
+			if tt.wantValid && domainErr != nil {
+				t.Fatalf("ValidateRouteDomain(%q) = %v, want nil", tt.domain, domainErr)
+			}
+			if !tt.wantValid && domainErr == nil {
+				t.Fatalf("ValidateRouteDomain(%q) = nil, want error", tt.domain)
+			}
+		})
+	}
+}
+
+// TestValidateRoutePortUnchanged pins that the ValidateRoute refactor kept
+// port behavior identical: port validation still runs after domain
+// validation and still rejects out-of-range values.
+func TestValidateRoutePortUnchanged(t *testing.T) {
+	if err := ValidateRoute("app.localhost", 1); err != nil {
+		t.Fatalf("port 1 = %v, want nil", err)
+	}
+	if err := ValidateRoute("app.localhost", 65535); err != nil {
+		t.Fatalf("port 65535 = %v, want nil", err)
+	}
+	for _, port := range []int{0, -1, 65536} {
+		if err := ValidateRoute("app.localhost", port); err == nil {
+			t.Fatalf("port %d = nil, want error", port)
+		}
+	}
+	// Domain errors still take precedence shape: invalid domain + invalid
+	// port reports the domain problem (same as before the refactor).
+	if err := ValidateRoute("", 0); err == nil {
+		t.Fatal("empty domain with port 0 = nil, want error")
 	}
 }

@@ -26,7 +26,7 @@ func newTestProxy(t *testing.T, backendPort int) *httptest.Server {
 	t.Helper()
 
 	engine := router.NewEngine()
-	if err := engine.AddRoute(testHost, "test-service", backendPort, router.RouteStatic); err != nil {
+	if _, err := engine.AddRoute(testHost, "test-service", backendPort, router.RouteStatic); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 
@@ -409,17 +409,68 @@ func TestBadGatewayPage(t *testing.T) {
 	}
 }
 
+// TestRouteNotFoundPage verifies the 404 guidance covers both static and
+// live routes: it must not assume every route comes from devtether.yaml,
+// and must point at 'routes add' for runtime-created routes.
+func TestRouteNotFoundPage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	engine := router.NewEngine()
+	srv := httptest.NewServer(LoggingMiddleware(NewHandler(engine, health.NewTracker())))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = "missing.localhost"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+	for _, want := range []string{
+		"Route Not Registered",
+		"no route registered",
+		"devtether.yaml",
+		"devtether routes add",
+		"devtether routes",
+		"restart",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("404 page missing %q:\n%s", want, page)
+		}
+	}
+	// The old YAML-only phrasing must be gone: editing the file is not the
+	// only resolution for a live route.
+	if strings.Contains(page, "ensure the route is defined and spelling is correct") {
+		t.Fatal("404 page still assumes YAML is the only route source")
+	}
+}
+
 // newTestProxyWithTracker is newTestProxy that also returns the health
 // tracker shared with the handler under test.
 func newTestProxyWithTracker(t *testing.T, backendPort int) (*httptest.Server, *health.Tracker) {
 	t.Helper()
 
 	engine := router.NewEngine()
-	if err := engine.AddRoute(testHost, "test-service", backendPort, router.RouteStatic); err != nil {
+	inc, err := engine.AddRoute(testHost, "test-service", backendPort, router.RouteStatic)
+	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 
 	tracker := health.NewTracker()
+	tracker.Register(testHost, inc)
 	srv := httptest.NewServer(LoggingMiddleware(NewHandler(engine, tracker)))
 	t.Cleanup(srv.Close)
 	return srv, tracker
@@ -553,10 +604,12 @@ func dialOpError(err error) error {
 func newProxyWithTransport(t *testing.T, rt http.RoundTripper) (*httptest.Server, *health.Tracker) {
 	t.Helper()
 	engine := router.NewEngine()
-	if err := engine.AddRoute(testHost, "test-service", 1, router.RouteStatic); err != nil {
+	inc, err := engine.AddRoute(testHost, "test-service", 1, router.RouteStatic)
+	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 	tracker := health.NewTracker()
+	tracker.Register(testHost, inc)
 	h := NewHandler(engine, tracker)
 	h.rp.Transport = rt
 	srv := httptest.NewServer(LoggingMiddleware(h))
@@ -685,5 +738,211 @@ func TestHealthDialTimeoutMarksOffline(t *testing.T) {
 
 	if got := routeStatus(t, tracker); got != health.StatusOffline {
 		t.Fatalf("genuine dial timeout must mark offline, got %s", got)
+	}
+}
+
+// TestHealthStaleIncarnationObservationRejected proves end-to-end that a
+// response completing after its route was replaced cannot record health
+// against the replacement incarnation. The backend blocks until released,
+// so the route swap happens deterministically mid-request.
+func TestHealthStaleIncarnationObservationRejected(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(entered) })
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	engine := router.NewEngine()
+	port := backendPort(t, backend)
+	inc1, err := engine.AddRoute(testHost, "test-service", port, router.RouteStatic)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	tracker := health.NewTracker()
+	tracker.Register(testHost, inc1)
+
+	srv := httptest.NewServer(LoggingMiddleware(NewHandler(engine, tracker)))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	reqDone := make(chan int, 1)
+	reqErr := make(chan error, 1)
+	go func() {
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/", nil)
+		if rerr != nil {
+			reqErr <- rerr
+			return
+		}
+		req.Host = testHost
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			reqErr <- derr
+			return
+		}
+		status := resp.StatusCode
+		if cerr := resp.Body.Close(); cerr != nil {
+			reqErr <- cerr
+			return
+		}
+		reqDone <- status
+	}()
+
+	waitForChannel(t, entered, "backend handler to start", 5*time.Second)
+
+	// Replace the route while the first request is still in flight.
+	if _, ok := engine.RemoveRoute(testHost, inc1); !ok {
+		t.Fatal("RemoveRoute failed")
+	}
+	tracker.Unregister(testHost, inc1)
+	inc2, err := engine.AddRoute(testHost, "test-service", port, router.RouteStatic)
+	if err != nil {
+		t.Fatalf("re-AddRoute: %v", err)
+	}
+	tracker.Register(testHost, inc2)
+
+	close(release)
+
+	select {
+	case status := <-reqDone:
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+	case err := <-reqErr:
+		t.Fatalf("proxy request: %v", err)
+	case <-ctx.Done():
+		t.Fatal("proxy request did not complete")
+	}
+
+	// The in-flight response carried inc1; it must not touch inc2's health.
+	if got := routeStatus(t, tracker); got != health.StatusUnknown {
+		t.Fatalf("old-incarnation response must not record health, got %s", got)
+	}
+
+	// A request resolved after the replacement records against inc2.
+	resp2 := proxyGet(t, ctx, srv.URL, "/")
+	_ = resp2.Body.Close()
+	if got := routeStatus(t, tracker); got != health.StatusOnline {
+		t.Fatalf("replacement incarnation should record online, got %s", got)
+	}
+}
+
+// TestHealthStaleIncarnationOfflineObservationRejected proves the offline
+// ErrorHandler path is incarnation-scoped: a dial failure from a request
+// that started against the old incarnation cannot mark the replacement
+// offline after the route is removed and recreated. The transport blocks
+// until released, so the swap happens deterministically mid-request.
+func TestHealthStaleIncarnationOfflineObservationRejected(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		select {
+		case <-release:
+			// Requests against the replacement incarnation succeed.
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				Proto:         "HTTP/1.1",
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(strings.NewReader("ok")),
+				ContentLength: 2,
+				Request:       r,
+			}, nil
+		default:
+		}
+		once.Do(func() { close(entered) })
+		<-release
+		return nil, dialOpError(dialTimeoutErr{})
+	})
+
+	engine := router.NewEngine()
+	inc1, err := engine.AddRoute(testHost, "test-service", 1, router.RouteStatic)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	tracker := health.NewTracker()
+	tracker.Register(testHost, inc1)
+
+	h := NewHandler(engine, tracker)
+	h.rp.Transport = rt
+	srv := httptest.NewServer(LoggingMiddleware(h))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	reqDone := make(chan int, 1)
+	reqErr := make(chan error, 1)
+	go func() {
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/", nil)
+		if rerr != nil {
+			reqErr <- rerr
+			return
+		}
+		req.Host = testHost
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			reqErr <- derr
+			return
+		}
+		status := resp.StatusCode
+		if cerr := resp.Body.Close(); cerr != nil {
+			reqErr <- cerr
+			return
+		}
+		reqDone <- status
+	}()
+
+	waitForChannel(t, entered, "transport to start", 5*time.Second)
+
+	// Replace the route while the first request is still in flight.
+	if _, ok := engine.RemoveRoute(testHost, inc1); !ok {
+		t.Fatal("RemoveRoute failed")
+	}
+	tracker.Unregister(testHost, inc1)
+	inc2, err := engine.AddRoute(testHost, "test-service", 1, router.RouteStatic)
+	if err != nil {
+		t.Fatalf("re-AddRoute: %v", err)
+	}
+	tracker.Register(testHost, inc2)
+
+	close(release)
+
+	var status int
+	select {
+	case status = <-reqDone:
+	case err := <-reqErr:
+		t.Fatalf("proxy request: %v", err)
+	case <-ctx.Done():
+		t.Fatal("proxy request did not complete")
+	}
+	if status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", status)
+	}
+
+	// The in-flight dial failure carried inc1; it must not mark inc2 offline.
+	if got := routeStatus(t, tracker); got != health.StatusUnknown {
+		t.Fatalf("old-incarnation offline observation must be rejected, got %s", got)
+	}
+
+	// A request resolved after the replacement records against inc2.
+	resp2 := proxyGet(t, ctx, srv.URL, "/")
+	_ = resp2.Body.Close()
+	if got := routeStatus(t, tracker); got != health.StatusOnline {
+		t.Fatalf("replacement incarnation should record online, got %s", got)
 	}
 }

@@ -53,9 +53,12 @@ type Observation struct {
 }
 
 // Target identifies a backend to probe. Addr is a loopback host:port.
+// Incarnation ties the target to a route lifetime: observations are
+// recorded only against the tracker's live incarnation for Domain.
 type Target struct {
-	Domain string
-	Addr   string
+	Domain      string
+	Addr        string
+	Incarnation uint64
 }
 
 // CheckResult is the probe outcome for one target.
@@ -67,6 +70,11 @@ type CheckResult struct {
 
 // Tracker holds the latest health observation per route domain.
 //
+// Health is scoped to route incarnations: Register admits the live
+// incarnation of a domain, Unregister retires it, and Observe records only
+// observations carrying the live incarnation — so evidence from a replaced
+// route can never affect its successor.
+//
 // Ordering policy: every health-producing operation (a probe or a proxied
 // request) allocates a monotonically increasing generation when it *begins*,
 // via Next. Observations are recorded with that generation, and a write is
@@ -76,6 +84,8 @@ type CheckResult struct {
 type Tracker struct {
 	mu   sync.RWMutex
 	seq  uint64
+	cur  map[string]uint64 // live incarnation per domain; absent = none
+	hi   map[string]uint64 // highest incarnation ever registered or removed; never decreases
 	gens map[string]uint64
 	obs  map[string]Observation
 }
@@ -83,6 +93,8 @@ type Tracker struct {
 // NewTracker returns an empty Tracker.
 func NewTracker() *Tracker {
 	return &Tracker{
+		cur:  make(map[string]uint64),
+		hi:   make(map[string]uint64),
 		gens: make(map[string]uint64),
 		obs:  make(map[string]Observation),
 	}
@@ -96,12 +108,50 @@ func (t *Tracker) Next() uint64 {
 	return t.seq
 }
 
-// Observe records o for domain when gen is newer than the generation of the
-// stored observation. It returns true when the observation was applied.
-func (t *Tracker) Observe(domain string, gen uint64, o Observation) bool {
+// Register admits inc as the live incarnation for domain when it exceeds
+// the high-water mark hi, which never decreases. Zero, duplicate, and stale
+// incarnations are ignored, so a delayed Register can never resurrect a
+// removed route.
+func (t *Tracker) Register(domain string, inc uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if gen <= t.gens[domain] {
+	if inc == 0 || inc <= t.hi[domain] {
+		return
+	}
+	t.hi[domain] = inc
+	t.cur[domain] = inc
+	delete(t.gens, domain)
+	delete(t.obs, domain)
+}
+
+// Unregister retires expectedInc for domain. The high-water mark advances
+// unconditionally (tombstoning the incarnation against future Register
+// calls), but stored health is cleared only when the live incarnation still
+// matches — a stale Unregister cannot erase a replacement's health.
+func (t *Tracker) Unregister(domain string, expectedInc uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if expectedInc == 0 {
+		return
+	}
+	if expectedInc > t.hi[domain] {
+		t.hi[domain] = expectedInc
+	}
+	if t.cur[domain] != expectedInc {
+		return
+	}
+	delete(t.cur, domain)
+	delete(t.gens, domain)
+	delete(t.obs, domain)
+}
+
+// Observe records o for domain when inc is the live incarnation and gen is
+// newer than the generation of the stored observation. It returns true when
+// the observation was applied.
+func (t *Tracker) Observe(domain string, inc, gen uint64, o Observation) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if inc == 0 || t.cur[domain] != inc || gen <= t.gens[domain] {
 		return false
 	}
 	t.gens[domain] = gen
@@ -109,10 +159,11 @@ func (t *Tracker) Observe(domain string, gen uint64, o Observation) bool {
 	return true
 }
 
-// ObserveNow allocates a fresh generation and records o. Use it when the
-// observation itself begins now (e.g., evidence obtained mid-request).
-func (t *Tracker) ObserveNow(domain string, o Observation) bool {
-	return t.Observe(domain, t.Next(), o)
+// ObserveNow allocates a fresh generation and records o against inc. Use it
+// when the observation itself begins now (e.g., evidence obtained
+// mid-request).
+func (t *Tracker) ObserveNow(domain string, inc uint64, o Observation) bool {
+	return t.Observe(domain, inc, t.Next(), o)
 }
 
 // Snapshot returns the latest observation for each domain, sorted by domain.
@@ -194,7 +245,7 @@ func (t *Tracker) checkAll(ctx context.Context, targets []Target, probe func(con
 			if gctx.Err() != nil && obs.Status == StatusUnknown {
 				return nil // budget/cancel: keep prior observation
 			}
-			t.Observe(tgt.Domain, gen, obs)
+			t.Observe(tgt.Domain, tgt.Incarnation, gen, obs)
 			mu.Lock()
 			results[i] = CheckResult{Domain: tgt.Domain, Addr: tgt.Addr, Observation: obs}
 			done[i] = true

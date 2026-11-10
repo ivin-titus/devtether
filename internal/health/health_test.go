@@ -129,14 +129,15 @@ func (e *timeoutError) Temporary() bool { return false }
 
 func TestObserveOrdering(t *testing.T) {
 	tr := NewTracker()
+	tr.Register("app.localhost", 1)
 
 	old := tr.Next()
 	newer := tr.Next()
 
-	if !tr.Observe("app.localhost", newer, Observation{Status: StatusOnline}) {
+	if !tr.Observe("app.localhost", 1, newer, Observation{Status: StatusOnline}) {
 		t.Fatal("newer observation should be applied")
 	}
-	if tr.Observe("app.localhost", old, Observation{Status: StatusOffline}) {
+	if tr.Observe("app.localhost", 1, old, Observation{Status: StatusOffline}) {
 		t.Fatal("older-generation observation must not overwrite a newer one")
 	}
 
@@ -148,7 +149,8 @@ func TestObserveOrdering(t *testing.T) {
 
 func TestSnapshotUnknownAndSorted(t *testing.T) {
 	tr := NewTracker()
-	tr.ObserveNow("b.localhost", Observation{Status: StatusOnline})
+	tr.Register("b.localhost", 1)
+	tr.ObserveNow("b.localhost", 1, Observation{Status: StatusOnline})
 
 	snap := tr.Snapshot([]string{"z.localhost", "a.localhost", "b.localhost"})
 	if len(snap) != 3 {
@@ -167,6 +169,8 @@ func TestSnapshotUnknownAndSorted(t *testing.T) {
 
 func TestConcurrentObserve(t *testing.T) {
 	tr := NewTracker()
+	tr.Register("app.localhost", 1)
+	tr.Register("api.localhost", 1)
 	const workers = 16
 	const writes = 50
 
@@ -176,8 +180,8 @@ func TestConcurrentObserve(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < writes; i++ {
-				tr.ObserveNow("app.localhost", Observation{Status: StatusOnline})
-				tr.ObserveNow("api.localhost", Observation{Status: StatusOffline})
+				tr.ObserveNow("app.localhost", 1, Observation{Status: StatusOnline})
+				tr.ObserveNow("api.localhost", 1, Observation{Status: StatusOffline})
 			}
 		}()
 	}
@@ -191,12 +195,14 @@ func TestConcurrentObserve(t *testing.T) {
 
 func TestCheckAll(t *testing.T) {
 	tr := NewTracker()
+	tr.Register("app.localhost", 1)
+	tr.Register("api.localhost", 1)
 	online := ephemeralListener(t)
 	offline := refusedAddr(t)
 
 	results := tr.CheckAll(context.Background(), []Target{
-		{Domain: "app.localhost", Addr: online},
-		{Domain: "api.localhost", Addr: offline},
+		{Domain: "app.localhost", Addr: online, Incarnation: 1},
+		{Domain: "api.localhost", Addr: offline, Incarnation: 1},
 	})
 
 	if len(results) != 2 {
@@ -244,6 +250,7 @@ func TestCheckAllCancelledKeepsUnknown(t *testing.T) {
 // no timing or sleeps.
 func TestCheckAllStaleProbeCannotClobber(t *testing.T) {
 	tr := NewTracker()
+	tr.Register("app.localhost", 1)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -257,13 +264,13 @@ func TestCheckAllStaleProbeCannotClobber(t *testing.T) {
 	done := make(chan []CheckResult, 1)
 	go func() {
 		done <- tr.checkAll(context.Background(),
-			[]Target{{Domain: "app.localhost", Addr: "127.0.0.1:1"}}, probe)
+			[]Target{{Domain: "app.localhost", Addr: "127.0.0.1:1", Incarnation: 1}}, probe)
 	}()
 	<-started
 
 	// A later proxy observation begins (gen N+1) and completes first.
 	gen := tr.Next()
-	tr.Observe("app.localhost", gen, Observation{Status: StatusOnline, CheckedAt: time.Now()})
+	tr.Observe("app.localhost", 1, gen, Observation{Status: StatusOnline, CheckedAt: time.Now()})
 
 	// The older startup probe completes later with an offline result.
 	close(release)
@@ -279,5 +286,270 @@ func TestNextMonotonic(t *testing.T) {
 	a, b := tr.Next(), tr.Next()
 	if b <= a {
 		t.Fatalf("generations must increase: %d then %d", a, b)
+	}
+}
+
+// TestRegisterRejectsZeroDuplicateAndStale pins the high-water-mark rule:
+// only an incarnation above hi ever becomes live.
+func TestRegisterRejectsZeroDuplicateAndStale(t *testing.T) {
+	tr := NewTracker()
+
+	tr.Register("app.localhost", 0)
+	if _, ok := tr.cur["app.localhost"]; ok {
+		t.Fatal("zero incarnation must never become live")
+	}
+
+	tr.Register("app.localhost", 5)
+	tr.Register("app.localhost", 5) // duplicate
+	tr.Register("app.localhost", 4) // stale
+	if got := tr.cur["app.localhost"]; got != 5 {
+		t.Fatalf("cur = %d, want 5", got)
+	}
+	if got := tr.hi["app.localhost"]; got != 5 {
+		t.Fatalf("hi = %d, want 5", got)
+	}
+}
+
+// TestUnregisterTombstoneBlocksReregister: removing a route tombstones its
+// incarnation so a delayed Register can never resurrect it.
+func TestUnregisterTombstoneBlocksReregister(t *testing.T) {
+	tr := NewTracker()
+
+	tr.Unregister("app.localhost", 10) // route removed before ever registering
+	tr.Register("app.localhost", 10)   // delayed register of the removed incarnation
+	if _, ok := tr.cur["app.localhost"]; ok {
+		t.Fatal("removed incarnation must not resurrect")
+	}
+
+	tr.Register("app.localhost", 11) // genuine replacement
+	if got := tr.cur["app.localhost"]; got != 11 {
+		t.Fatalf("cur = %d, want 11", got)
+	}
+	if got := tr.hi["app.localhost"]; got != 11 {
+		t.Fatalf("hi = %d, want 11", got)
+	}
+}
+
+// TestInterleavingA: a stale Unregister arriving after remove→re-add must not
+// clear the replacement's live incarnation or health.
+func TestInterleavingA(t *testing.T) {
+	tr := NewTracker()
+	tr.Register("app.localhost", 11)
+	tr.ObserveNow("app.localhost", 11, Observation{Status: StatusOnline})
+
+	// RemoveRoute(d, 10) → AddRoute → Register(11) already happened; now a
+	// delayed Unregister(10) arrives.
+	tr.Unregister("app.localhost", 10)
+
+	if got := tr.cur["app.localhost"]; got != 11 {
+		t.Fatalf("stale unregister cleared cur: got %d, want 11", got)
+	}
+	if tr.Observe("app.localhost", 10, tr.Next(), Observation{Status: StatusOffline}) {
+		t.Fatal("old-incarnation observation must be rejected")
+	}
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusOnline {
+		t.Fatalf("replacement health must survive, got %s", got)
+	}
+}
+
+// TestInterleavingB: a delayed Register for a removed incarnation arriving
+// after the replacement registered must not displace it.
+func TestInterleavingB(t *testing.T) {
+	tr := NewTracker()
+
+	// AddRoute (never registered) → RemoveRoute(d, 10) → Unregister(10) →
+	// AddRoute → Register(11) → delayed Register(10).
+	tr.Unregister("app.localhost", 10)
+	tr.Register("app.localhost", 11)
+	tr.Register("app.localhost", 10)
+
+	if got := tr.cur["app.localhost"]; got != 11 {
+		t.Fatalf("delayed register displaced cur: got %d, want 11", got)
+	}
+	if got := tr.hi["app.localhost"]; got != 11 {
+		t.Fatalf("hi = %d, want 11", got)
+	}
+}
+
+// TestZeroIncarnationRejected: zero incarnations are rejected by every
+// operation and mutate nothing.
+func TestZeroIncarnationRejected(t *testing.T) {
+	tr := NewTracker()
+	tr.Register("app.localhost", 3)
+
+	if tr.Observe("app.localhost", 0, tr.Next(), Observation{Status: StatusOnline}) {
+		t.Fatal("zero-incarnation Observe must be rejected")
+	}
+	if tr.ObserveNow("app.localhost", 0, Observation{Status: StatusOnline}) {
+		t.Fatal("zero-incarnation ObserveNow must be rejected")
+	}
+	tr.Unregister("app.localhost", 0)
+	tr.Register("app.localhost", 0)
+
+	if got := tr.cur["app.localhost"]; got != 3 {
+		t.Fatalf("cur = %d, want 3 (zero-incarnation ops must be no-ops)", got)
+	}
+	if got := tr.hi["app.localhost"]; got != 3 {
+		t.Fatalf("hi = %d, want 3", got)
+	}
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusUnknown {
+		t.Fatalf("zero-incarnation ops must not write health, got %s", got)
+	}
+}
+
+// TestUnregisterClearsOnlyMatchingIncarnation: a mismatched Unregister
+// tombstones hi but leaves the live incarnation and its health intact; a
+// matching one clears them.
+func TestUnregisterClearsOnlyMatchingIncarnation(t *testing.T) {
+	tr := NewTracker()
+	tr.Register("app.localhost", 7)
+	tr.ObserveNow("app.localhost", 7, Observation{Status: StatusOnline})
+
+	tr.Unregister("app.localhost", 8) // mismatch
+	if got := tr.cur["app.localhost"]; got != 7 {
+		t.Fatalf("mismatched unregister cleared cur: got %d, want 7", got)
+	}
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusOnline {
+		t.Fatalf("mismatched unregister cleared health, got %s", got)
+	}
+
+	tr.Unregister("app.localhost", 7) // match
+	if _, ok := tr.cur["app.localhost"]; ok {
+		t.Fatal("matching unregister must clear cur")
+	}
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusUnknown {
+		t.Fatalf("matching unregister must clear health, got %s", got)
+	}
+}
+
+// TestConcurrentUnregisterObserve races observations against an unregister;
+// whatever the interleaving, the final state is consistent and the race
+// detector validates locking.
+func TestConcurrentUnregisterObserve(t *testing.T) {
+	tr := NewTracker()
+	tr.Register("app.localhost", 1)
+
+	var wg sync.WaitGroup
+	for w := 0; w < 16; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				tr.ObserveNow("app.localhost", 1, Observation{Status: StatusOnline})
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tr.Unregister("app.localhost", 1)
+	}()
+	wg.Wait()
+
+	// Whether observations landed before the unregister or were rejected
+	// after it, the unregister clears them: the final state is unknown.
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusUnknown {
+		t.Fatalf("expected unknown after unregister, got %s", got)
+	}
+	if _, ok := tr.cur["app.localhost"]; ok {
+		t.Fatal("cur must be absent after unregister")
+	}
+}
+
+// TestConcurrentRegisterHighestIncarnationWins launches concurrent Register
+// calls for incarnations 1..8 (plus one duplicate) released together. The
+// highest incarnation must win regardless of arrival order: anything not
+// strictly greater than the high-water mark is rejected.
+func TestConcurrentRegisterHighestIncarnationWins(t *testing.T) {
+	tr := NewTracker()
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := uint64(1); i <= 8; i++ {
+		inc := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			tr.Register("app.localhost", inc)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		tr.Register("app.localhost", 3) // duplicate of an in-flight incarnation
+	}()
+	close(start)
+	wg.Wait()
+
+	if got := tr.hi["app.localhost"]; got != 8 {
+		t.Fatalf("hi = %d, want 8", got)
+	}
+	if got := tr.cur["app.localhost"]; got != 8 {
+		t.Fatalf("cur = %d, want 8", got)
+	}
+
+	// The winning incarnation records observations; losers do not.
+	tr.Observe("app.localhost", 7, tr.Next(), Observation{Status: StatusOffline, CheckedAt: time.Now()})
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusUnknown {
+		t.Fatalf("stale incarnation observation must be rejected, got %s", got)
+	}
+	tr.Observe("app.localhost", 8, tr.Next(), Observation{Status: StatusOnline, CheckedAt: time.Now()})
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusOnline {
+		t.Fatalf("winning incarnation must record online, got %s", got)
+	}
+}
+
+// TestCheckAllProbeAfterReplacementRejected: a probe that began against the
+// old incarnation and completes after remove→re-add must not overwrite the
+// replacement's health. Ordering is channel-gated — no sleeps.
+func TestCheckAllProbeAfterReplacementRejected(t *testing.T) {
+	tr := NewTracker()
+	tr.Register("app.localhost", 1)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	probe := func(context.Context, string) Observation {
+		close(started)
+		<-release
+		return Observation{Status: StatusOffline, CheckedAt: time.Now()}
+	}
+
+	done := make(chan []CheckResult, 1)
+	go func() {
+		done <- tr.checkAll(context.Background(),
+			[]Target{{Domain: "app.localhost", Addr: "127.0.0.1:1", Incarnation: 1}}, probe)
+	}()
+	<-started
+
+	// The route is replaced while the probe is in flight.
+	tr.Unregister("app.localhost", 1)
+	tr.Register("app.localhost", 2)
+	tr.Observe("app.localhost", 2, tr.Next(), Observation{Status: StatusOnline, CheckedAt: time.Now()})
+
+	close(release)
+	<-done
+
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusOnline {
+		t.Fatalf("old-incarnation probe must not overwrite replacement health, got %s", got)
+	}
+}
+
+// TestCheckAllUnregisteredIncarnationLeavesStateUntouched is the
+// wire-compatibility lock: targets without a registered incarnation still
+// return correct per-probe results (routes --check contract) but never
+// write tracker state.
+func TestCheckAllUnregisteredIncarnationLeavesStateUntouched(t *testing.T) {
+	tr := NewTracker()
+
+	results := tr.CheckAll(context.Background(), []Target{
+		{Domain: "app.localhost", Addr: ephemeralListener(t)}, // Incarnation 0
+	})
+	if len(results) != 1 || results[0].Status != StatusOnline {
+		t.Fatalf("wire result must stay correct, got %+v", results)
+	}
+	if got := tr.Snapshot([]string{"app.localhost"})[0].Status; got != StatusUnknown {
+		t.Fatalf("unregistered target must not write tracker state, got %s", got)
 	}
 }

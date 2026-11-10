@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"errors"
 
 	"github.com/ivin-titus/devtether/internal/health"
 	"github.com/ivin-titus/devtether/internal/proxy"
@@ -32,12 +35,14 @@ func newStack(t *testing.T, routes map[string]int) (context.CancelFunc, *health.
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	e := router.NewEngine()
+	tr := health.NewTracker()
 	for d, p := range routes {
-		if addErr := e.AddRoute(d, "svc", p, router.RouteStatic); addErr != nil {
+		inc, addErr := e.AddRoute(d, "svc", p, router.RouteStatic)
+		if addErr != nil {
 			t.Fatal(addErr)
 		}
+		tr.Register(d, inc)
 	}
-	tr := health.NewTracker()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	srv := NewServer(e, tr, cancel, "devtether.yaml")
@@ -45,7 +50,11 @@ func newStack(t *testing.T, routes map[string]int) (context.CancelFunc, *health.
 	if err != nil {
 		t.Fatalf("daemon Listen: %v", err)
 	}
-	go func() { _ = srv.Serve(ctx, ln) }()
+	// Serve's deferred cleanup (nonce/PID/socket removal) resolves paths
+	// from XDG_RUNTIME_DIR at exit time; waiting for it in t.Cleanup keeps
+	// it from deleting a later test's runtime files.
+	serveDone := make(chan struct{})
+	go func() { _ = srv.Serve(ctx, ln); close(serveDone) }()
 
 	pSrv := &http.Server{
 		Handler:           proxy.LoggingMiddleware(proxy.NewHandler(e, tr)),
@@ -59,6 +68,8 @@ func newStack(t *testing.T, routes map[string]int) (context.CancelFunc, *health.
 	t.Cleanup(func() {
 		_ = pSrv.Shutdown(context.Background())
 		_ = srv.httpServer.Shutdown(context.Background())
+		cancel()
+		<-serveDone
 	})
 	return cancel, tr, "http://" + pl.Addr().String()
 }
@@ -459,5 +470,317 @@ func TestStressCheckJSONContract(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Domain != "x.localhost" || rows[0].Status != "offline" {
 		t.Fatalf("unexpected wire shape: %+v", rows)
+	}
+}
+
+// rawIPC sends one request over the daemon socket, optionally with the
+// on-disk nonce, and returns the status code.
+func rawIPC(t *testing.T, method, path string, body io.Reader, withNonce bool) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, "http://d"+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withNonce {
+		nonce, nErr := readNonce()
+		if nErr != nil {
+			t.Fatalf("readNonce: %v", nErr)
+		}
+		req.Header.Set("X-Devtether-Nonce", nonce)
+	}
+	resp, err := socketClient(5 * time.Second).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+func apiStatus(err error) int {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode
+	}
+	return 0
+}
+
+// TestStressRouteClientLifecycle exercises the real socket: client 201/204
+// success paths, typed APIError statuses, and the GET incarnation contract.
+func TestStressRouteClientLifecycle(t *testing.T) {
+	cancel, tr, base := newStack(t, map[string]int{"static.localhost": deadPort(t)})
+	defer cancel()
+	ctx := context.Background()
+	client := NewClient()
+	port := backendPort(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+
+	created, err := client.AddRoute(ctx, "live.localhost", port)
+	if err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if created.Type != "live" || created.Incarnation == 0 || created.Domain != "live.localhost" {
+		t.Fatalf("unexpected created route: %+v", created)
+	}
+	// Proxy serves the live route immediately — no restart.
+	resp := proxyReq(t, ctx, base, "live.localhost", "/")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTeapot {
+		t.Fatalf("proxy live route: %d", resp.StatusCode)
+	}
+
+	routes, err := client.ListRoutes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed RouteResponse
+	for _, r := range routes {
+		if r.Domain == "live.localhost" {
+			listed = r
+		}
+	}
+	if listed.Incarnation != created.Incarnation {
+		t.Fatalf("GET incarnation %d != POST incarnation %d", listed.Incarnation, created.Incarnation)
+	}
+
+	// Typed error statuses.
+	if _, err = client.AddRoute(ctx, "live.localhost", port); apiStatus(err) != http.StatusConflict {
+		t.Fatalf("duplicate AddRoute: %v", err)
+	}
+	if _, err = client.AddRoute(ctx, "bad.internal", port); apiStatus(err) != http.StatusBadRequest {
+		t.Fatalf("invalid AddRoute: %v", err)
+	}
+	if _, err = client.AddRoute(ctx, "p.localhost", 70000); apiStatus(err) != http.StatusBadRequest {
+		t.Fatalf("out-of-range AddRoute: %v", err)
+	}
+	if err = client.RemoveRoute(ctx, "live.localhost", created.Incarnation+100); apiStatus(err) != http.StatusConflict {
+		t.Fatalf("stale RemoveRoute: %v", err)
+	}
+	if err = client.RemoveRoute(ctx, "absent.localhost", 1); apiStatus(err) != http.StatusNotFound {
+		t.Fatalf("absent RemoveRoute: %v", err)
+	}
+	var apiErr *APIError
+	if err = client.RemoveRoute(ctx, "absent.localhost", 1); !errors.As(err, &apiErr) || apiErr.Body == "" {
+		t.Fatalf("APIError must carry trimmed body: %v", err)
+	}
+
+	// 204 success for live and static routes.
+	if err = client.RemoveRoute(ctx, "live.localhost", created.Incarnation); err != nil {
+		t.Fatalf("RemoveRoute live: %v", err)
+	}
+	staticInc := uint64(0)
+	routes, _ = client.ListRoutes(ctx)
+	for _, r := range routes {
+		if r.Domain == "static.localhost" {
+			staticInc = r.Incarnation
+		}
+	}
+	if err = client.RemoveRoute(ctx, "static.localhost", staticInc); err != nil {
+		t.Fatalf("RemoveRoute static: %v", err)
+	}
+	// After removal new proxy requests are rejected and health is retired.
+	resp = proxyReq(t, ctx, base, "live.localhost", "/")
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusTeapot {
+		t.Fatal("proxy still serves removed route")
+	}
+	if st := statusOf(t, tr, "live.localhost"); st != health.StatusUnknown {
+		t.Fatalf("removed route health: %s", st)
+	}
+
+	// Re-add strictly increases the incarnation.
+	again, err := client.AddRoute(ctx, "live.localhost", port)
+	if err != nil || again.Incarnation <= created.Incarnation {
+		t.Fatalf("re-add: %+v %v", again, err)
+	}
+}
+
+// TestStressRouteMuxAndNonce pins ServeMux precedence and nonce enforcement
+// on the production mux over the real socket.
+func TestStressRouteMuxAndNonce(t *testing.T) {
+	cancel, _, _ := newStack(t, map[string]int{"app.localhost": deadPort(t)})
+	defer cancel()
+
+	cases := []struct {
+		method, path string
+		body         string
+		nonce        bool
+		want         int
+	}{
+		{http.MethodDelete, "/routes/check?inc=1", "", true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/routes/check/", "", true, http.StatusNotFound},
+		{http.MethodDelete, "/routes/", "", true, http.StatusNotFound},
+		{http.MethodDelete, "/routes/app.localhost/extra?inc=1", "", true, http.StatusNotFound},
+		{http.MethodGet, "/routes/app.localhost", "", true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/routes/a%2Fb.localhost?inc=1", "", true, http.StatusBadRequest},
+		{http.MethodDelete, "/routes/%20app.localhost?inc=1", "", true, http.StatusBadRequest},
+		{http.MethodDelete, "/routes/app.localhost?inc=1", "", false, http.StatusForbidden},
+		{http.MethodPost, "/routes", `{"domain":"n.localhost","port":3000}`, false, http.StatusForbidden},
+		{http.MethodPut, "/routes", "", true, http.StatusMethodNotAllowed},
+		{http.MethodPost, "/routes", `{"domain":"n.localhost","port":3000,"x":1}`, true, http.StatusBadRequest},
+		{http.MethodPost, "/routes", strings.Repeat(" ", 9<<10), true, http.StatusRequestEntityTooLarge},
+		// beta.7 contracts unchanged.
+		{http.MethodGet, "/routes", "", false, http.StatusOK},
+		{http.MethodGet, "/status", "", false, http.StatusOK},
+		{http.MethodGet, "/routes/check", "", false, http.StatusMethodNotAllowed},
+		{http.MethodPost, "/shutdown", "", false, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		var body io.Reader
+		if c.body != "" {
+			body = strings.NewReader(c.body)
+		}
+		if got := rawIPC(t, c.method, c.path, body, c.nonce); got != c.want {
+			t.Errorf("%s %s (nonce=%v): got %d, want %d", c.method, c.path, c.nonce, got, c.want)
+		}
+	}
+}
+
+// startGate runs n workers that block until the gate closes, so all requests
+// race into the daemon together; the gate replaces timing-based ordering.
+func startGate(n int, work func(i int)) {
+	gate := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-gate
+			work(i)
+		}()
+	}
+	close(gate)
+	wg.Wait()
+}
+
+func TestStressConcurrentRouteCreate(t *testing.T) {
+	cancel, _, _ := newStack(t, nil)
+	defer cancel()
+	client := NewClient()
+	const n = 16
+	codes := make([]int, n)
+	incs := make([]uint64, n)
+	startGate(n, func(i int) {
+		r, err := client.AddRoute(context.Background(), "race.localhost", 3000+i)
+		if err == nil {
+			codes[i], incs[i] = http.StatusCreated, r.Incarnation
+			return
+		}
+		codes[i] = apiStatus(err)
+	})
+	created, conflicts := 0, 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("unexpected status %d", c)
+		}
+	}
+	if created != 1 || conflicts != n-1 {
+		t.Fatalf("created=%d conflicts=%d", created, conflicts)
+	}
+}
+
+func TestStressConcurrentRouteDelete(t *testing.T) {
+	cancel, tr, _ := newStack(t, nil)
+	defer cancel()
+	client := NewClient()
+	r, err := client.AddRoute(context.Background(), "race.localhost", 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 16
+	codes := make([]int, n)
+	startGate(n, func(i int) {
+		if err := client.RemoveRoute(context.Background(), "race.localhost", r.Incarnation); err != nil {
+			codes[i] = apiStatus(err)
+			return
+		}
+		codes[i] = http.StatusNoContent
+	})
+	removed, missing := 0, 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusNoContent:
+			removed++
+		case http.StatusNotFound:
+			missing++
+		default:
+			t.Fatalf("unexpected status %d", c)
+		}
+	}
+	if removed != 1 || missing != n-1 {
+		t.Fatalf("removed=%d missing=%d", removed, missing)
+	}
+	if tr.ObserveNow("race.localhost", r.Incarnation, health.Observation{Status: health.StatusOnline, CheckedAt: time.Now()}) {
+		t.Fatal("removed incarnation still observable")
+	}
+}
+
+// TestStressDeleteRacingReAdd races stale DELETEs of incarnation A against a
+// concurrent re-creation (incarnation B). No stale DELETE may remove B, and
+// after settling the tracker reflects only B.
+func TestStressDeleteRacingReAdd(t *testing.T) {
+	cancel, tr, _ := newStack(t, nil)
+	defer cancel()
+	client := NewClient()
+	ctx := context.Background()
+	a, err := client.AddRoute(ctx, "race.localhost", 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.RemoveRoute(ctx, "race.localhost", a.Incarnation); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 16
+	codes := make([]int, n)
+	var b *RouteResponse
+	startGate(n+1, func(i int) {
+		if i == n {
+			r, addErr := client.AddRoute(ctx, "race.localhost", 4000)
+			if addErr != nil {
+				t.Errorf("re-add: %v", addErr)
+				return
+			}
+			b = r
+			return
+		}
+		if rmErr := client.RemoveRoute(ctx, "race.localhost", a.Incarnation); rmErr != nil {
+			codes[i] = apiStatus(rmErr)
+			return
+		}
+		codes[i] = http.StatusNoContent
+	})
+	if b == nil {
+		t.Fatal("re-add failed")
+	}
+	for i, c := range codes {
+		if c != http.StatusNotFound && c != http.StatusConflict {
+			t.Fatalf("stale DELETE %d: got %d, want 404 or 409", i, c)
+		}
+	}
+	if b.Incarnation <= a.Incarnation {
+		t.Fatalf("incarnations not increasing: %d then %d", a.Incarnation, b.Incarnation)
+	}
+	routes, err := client.ListRoutes(ctx)
+	if err != nil || len(routes) != 1 || routes[0].Incarnation != b.Incarnation || routes[0].Port != 4000 {
+		t.Fatalf("replacement lost: %+v %v", routes, err)
+	}
+	// Post-settle: only B is live in the tracker.
+	if tr.ObserveNow("race.localhost", a.Incarnation, health.Observation{Status: health.StatusOffline, CheckedAt: time.Now()}) {
+		t.Fatal("stale incarnation A observable after settle")
+	}
+	if !tr.ObserveNow("race.localhost", b.Incarnation, health.Observation{Status: health.StatusOnline, CheckedAt: time.Now()}) {
+		t.Fatal("replacement incarnation B not registered")
+	}
+	// A now-stale DELETE of A against live B is a deterministic 409.
+	if err := client.RemoveRoute(ctx, "race.localhost", a.Incarnation); apiStatus(err) != http.StatusConflict {
+		t.Fatalf("stale DELETE after settle: %v", err)
+	}
+	if st := statusOf(t, tr, "race.localhost"); st != health.StatusOnline {
+		t.Fatalf("replacement health cleared: %s", st)
 	}
 }

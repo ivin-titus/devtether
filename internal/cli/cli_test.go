@@ -60,8 +60,17 @@ func TestNoRoutesHint(t *testing.T) {
 	if !strings.Contains(got, path) {
 		t.Fatalf("expected hint to include path %q, got: %s", path, got)
 	}
-	if !strings.Contains(got, "Edit") {
-		t.Fatalf("expected hint to say 'Edit ... to add routes', got: %s", got)
+	// Both workflows must be offered: persistent static routes (restart
+	// required) and ephemeral live routes on the running daemon.
+	for _, want := range []string{"static routes", "restart", "devtether routes add <domain> <port>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected hint to mention %q, got: %s", want, got)
+		}
+	}
+	// The obsolete YAML-only instruction must be gone: editing the file is
+	// not the only way to get a route.
+	if strings.Contains(got, "then restart the daemon") {
+		t.Fatalf("hint still assumes YAML edit + restart is the only path: %s", got)
 	}
 }
 

@@ -24,12 +24,17 @@ devtether init
 devtether up
 ```
 
-Route changes currently require a restart:
+Static routes from `devtether.yaml` take effect on the next start, but the
+running daemon also accepts runtime route changes without a restart or any
+YAML edit:
 
 ```bash
-devtether down
-devtether up
+devtether routes add api.localhost 8042
+devtether routes
+devtether routes remove api.localhost
 ```
+
+See [Live routes](#live-routes) for the lifecycle details.
 
 ## 🛠️ Installation
 
@@ -116,6 +121,9 @@ devtether up -d
 devtether down
 devtether status
 devtether routes
+devtether routes add <domain> <port>
+devtether routes remove <domain>
+devtether routes --check
 devtether logs
 devtether logs -f
 devtether doctor
@@ -123,6 +131,26 @@ devtether version
 ```
 
 Foreground mode writes logs to the terminal. Detached mode writes to `devtether.log` under the configured log directory.
+
+### Live routes
+
+`devtether routes add <domain> <port>` creates an ephemeral live route on the
+running daemon. It requires a running daemon (there is no config-file
+fallback) and is discarded when the daemon stops — it is never written to
+`devtether.yaml`.
+
+`devtether routes remove <domain>` removes a static or live route from the
+running daemon only, after a confirmation prompt (`-y`/`--yes` skips it).
+`devtether.yaml` is never modified: a removed static route returns on the
+next daemon start, while a removed live route stays gone until re-added.
+
+`devtether routes --check` asks the daemon to probe every active route's
+backend once and prints TCP connection latency per route.
+
+Route health shown by `devtether routes` is observational: a newly
+registered route reports `UNKNOWN` until proxied traffic or an explicit
+check produces an observation. `UNKNOWN` means "not yet checked" — it is
+not the same as `OFFLINE`.
 
 ### Proxy port behavior
 

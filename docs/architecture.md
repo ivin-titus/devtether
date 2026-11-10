@@ -116,10 +116,11 @@ Package: `internal/router`
 
 The router is a thread-safe in-memory map of normalized domain names to route targets.
 
-- Routes are loaded from `routes:` at startup.
+- Static routes are loaded from `routes:` at startup.
+- Runtime route mutation is supported through the IPC API: `POST /routes` adds an ephemeral `live` route and `DELETE /routes/{domain}?inc=N` conditionally removes a static or live route. Neither operation writes `devtether.yaml`.
+- Every route insert receives a monotonically increasing incarnation, used for incarnation-aware health identity and as the conditional-delete version token.
+- YAML configuration is not hot-reloaded: editing `devtether.yaml` still requires `devtether down && devtether up`.
 - Route output is sorted where exposed by current CLI/API surfaces.
-- Configuration changes are not hot-reloaded.
-- Changing routes currently requires `devtether down && devtether up`.
 
 ## 6. Current IPC Daemon
 
@@ -131,12 +132,14 @@ Current endpoints:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/routes` | List active routes with latest health observations |
+| GET | `/routes` | List active routes with type, incarnation and latest health observations |
+| POST | `/routes` | Create an ephemeral live route (nonce; strict JSON `{"domain","port"}`) → 201, or 400/403/405/409/413/500 |
+| DELETE | `/routes/{domain}?inc=N` | Conditionally remove a route by incarnation (nonce) → 204, or 400/403/404/405/409 |
 | GET | `/status` | Report PID, uptime, route count, heap and config path |
 | POST | `/routes/check` | Probe every active route's backend and return structured results |
 | POST | `/shutdown` | Request graceful shutdown using the daemon nonce |
 
-The current API does not support dynamic configuration writes.
+The current API does not support configuration-file writes or YAML hot reload; runtime route mutation is memory-only and never persists to `devtether.yaml`.
 
 ### Instance and state ownership
 
@@ -159,7 +162,9 @@ The current API does not support dynamic configuration writes.
 | `up` / `start` | Start the routing daemon |
 | `down` / `stop` | Gracefully stop the daemon |
 | `status` | Show daemon state |
-| `routes` | Show active routes |
+| `routes` | Show active routes (`--check` probes backends once) |
+| `routes add <domain> <port>` | Add an ephemeral live route to the running daemon |
+| `routes remove <domain>` | Remove a static or live route from the running daemon (confirmation; `-y` skips) |
 | `logs` | Show detached daemon logs |
 | `doctor` | Diagnose environment/configuration issues |
 | `version` | Show build information |
@@ -184,11 +189,13 @@ System mutations require explicit user consent. Unsupported resolver setups are 
 
 Route health is observational metadata only; it never affects routing or DNS decisions and an `offline` route remains routable. There is no periodic health-check ticker: the daemon performs no recurring backend connection attempts while idle. Health state lives in an in-memory `internal/health` tracker inside the daemon process only — it is never persisted and never survives a restart.
 
+Observations are incarnation-scoped: every route insert receives a monotonically increasing incarnation, and the tracker records an observation only against the live incarnation of a domain. Evidence from a replaced or removed route can never affect its successor, and conditional deletion (`DELETE /routes/{domain}?inc=N`) uses the same incarnation as its version token. A newly registered route carries no observation and reports `unknown` — which means "not yet checked" and is not the same as `offline`.
+
 Three sources feed the tracker:
 
-- **Startup verification:** `devtether up` runs a one-shot bounded check over all configured routes after bind, concurrently with a bounded worker count and an overall budget of ~5 seconds. It never blocks daemon readiness; routes the check does not reach are reported `unknown`.
-- **Proxy observations:** when proxied traffic reaches a backend (any HTTP response, including 4xx/5xx), the route is observed `online`. A confirmed dial-stage connection failure is observed `offline`. Client cancellations, post-connect failures, response-header timeouts, and streaming aborts (ADR-008) are inconclusive and never change the recorded status.
-- **On-demand diagnostics:** `devtether routes --check` asks the daemon over IPC (`POST /routes/check`) to run the same bounded check on demand and prints structured results.
+- **Startup verification:** `devtether up` runs a one-shot bounded check over the routes present at startup (the static YAML routes) after bind, concurrently with a bounded worker count and an overall budget of ~5 seconds. It never blocks daemon readiness; routes the check does not reach are reported `unknown`. Live routes added after startup do not receive this check.
+- **Proxy observations:** when proxied traffic reaches a backend (any HTTP response, including 4xx/5xx), the route is observed `online`. A confirmed dial-stage connection failure is observed `offline`. Client cancellations, post-connect failures, response-header timeouts, and streaming aborts (ADR-008) are inconclusive and never change the recorded status — so not every proxied request produces a conclusive observation.
+- **On-demand diagnostics:** `devtether routes --check` asks the daemon over IPC (`POST /routes/check`) to run the same bounded check on demand, records the results in the tracker, and prints structured results.
 
 All probes measure TCP reachability, not application-level health; reported latency is connection latency, not HTTP response time. Observations are ordered by a generation allocated when an observation begins, so an older, slower probe cannot overwrite a newer observation.
 
