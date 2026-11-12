@@ -23,8 +23,15 @@ func socketClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Resolve the validated runtime directory on every dial: an
+				// absent or unsafe directory fails here, before any connection
+				// attempt, so no client can reach an unvalidated socket path.
+				socketPath, err := SocketPath()
+				if err != nil {
+					return nil, err
+				}
 				d := net.Dialer{Timeout: 2 * time.Second}
-				return d.DialContext(ctx, "unix", SocketPath())
+				return d.DialContext(ctx, "unix", socketPath)
 			},
 		},
 		Timeout: timeout,

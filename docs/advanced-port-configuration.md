@@ -36,7 +36,7 @@ On macOS, use the required administrative privileges when binding a privileged p
 
 ### Configured port vs fallback port
 
-In beta.7, if the configured proxy port cannot be bound because of permission or address-in-use conditions, DevTether tries **127.0.0.1:8080**.
+If the configured proxy port cannot be bound because of permission or address-in-use conditions, DevTether tries **127.0.0.1:8080**.
 
 ```text
 configured port
@@ -96,6 +96,10 @@ When `settings.log_path` is omitted, detached logs are written to:
 ```
 
 When `settings.log_path` is provided, its value is used as the log directory. A relative custom path is resolved from the process working directory; use an absolute path for an unambiguous location when invoking a config from another directory.
+
+Detached log opening is fail-closed: the final log directory must be a real directory (not a symlink) owned by the current user and not group/world-writable, and `devtether.log` must be a regular file owned by the current user with a single hard link and no group/world write permission. Unsafe paths are rejected before the daemon starts. Intermediate ancestor directories may still be symlinks (for example macOS `/var` → `/private/var`); only the final directory and the log file itself are protected.
+
+Ownership is checked against the invoking user's real UID. If the log directory was created under a different execution mode (for example `sudo` versus a normal user), that mode cannot reuse it; run with the same mode or set `settings.log_path` to a separate directory for the other mode. Filesystems that do not honor Unix ownership (for example NTFS/exFAT/FUSE mounts) report every file as the mounting user, so a different-UID execution cannot pass the ownership check there — point `settings.log_path` at a native filesystem in that case.
 
 ## 4. Keep the DNS and Proxy Boundaries Separate
 

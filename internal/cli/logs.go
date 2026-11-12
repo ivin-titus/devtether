@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/ivin-titus/devtether/internal/config"
@@ -58,17 +57,24 @@ func validateLogLines(n int) error {
 }
 
 func runLogs(cmd *cobra.Command, args []string) error {
-	logFile, err := resolveLogFile()
+	// Tolerate config load errors by falling back to the default log directory,
+	// preserving the previous resolveLogFile behavior.
+	var cfg *config.Config
+	if c, err := config.LoadConfig(configPath); err == nil {
+		cfg = c
+	}
+	logDir, err := resolveLogDir(cfg)
 	if err != nil {
 		return err
 	}
+	logFile := logFilePath(logDir)
 
-	f, err := os.Open(logFile) //nolint:gosec // Log file path is resolved from config
+	f, err := openLogFileForRead(logDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("no log file found — logs are only created when running in daemon mode (devtether up -d)")
 		}
-		return fmt.Errorf("failed to open log file: %w", err)
+		return fmt.Errorf("failed to open log file %s: %w", logFile, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -149,20 +155,6 @@ func printLastLines(f *os.File, n int) error {
 	}
 	_, err = io.Copy(os.Stdout, f)
 	return err
-}
-
-// resolveLogFile determines the log file path from config or default.
-func resolveLogFile() (string, error) {
-	cfg, err := config.LoadConfig(configPath)
-	if err == nil && cfg.Settings.LogPath != "" {
-		return filepath.Join(cfg.Settings.LogPath, "devtether.log"), nil
-	}
-
-	absConfig, err := filepath.Abs(configPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve config path: %w", err)
-	}
-	return filepath.Join(filepath.Dir(absConfig), ".logs", "devtether.log"), nil
 }
 
 // tailFollow continuously reads new data from the file and prints it.
@@ -256,4 +248,3 @@ func tailFollow(ctx context.Context, f *os.File) error {
 	})
 	return g.Wait()
 }
-

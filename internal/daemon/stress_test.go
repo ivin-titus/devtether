@@ -392,7 +392,11 @@ func TestStressConcurrentIPC(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://d/routes/check", nil)
 	uc := &http.Client{Transport: &http.Transport{
 		DialContext: func(c context.Context, _, _ string) (net.Conn, error) {
-			return new(net.Dialer).DialContext(c, "unix", SocketPath())
+			p, err := SocketPath()
+			if err != nil {
+				return nil, err
+			}
+			return new(net.Dialer).DialContext(c, "unix", p)
 		},
 	}}
 	resp, err := uc.Do(req)
@@ -456,7 +460,11 @@ func TestStressCheckJSONContract(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://d/routes/check", nil)
 	uc := &http.Client{Transport: &http.Transport{
 		DialContext: func(c context.Context, _, _ string) (net.Conn, error) {
-			return new(net.Dialer).DialContext(c, "unix", SocketPath())
+			p, err := SocketPath()
+			if err != nil {
+				return nil, err
+			}
+			return new(net.Dialer).DialContext(c, "unix", p)
 		},
 	}}
 	resp, err := uc.Do(req)

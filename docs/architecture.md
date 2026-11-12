@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> **Current release:** v2.0.0-beta.7
+> **Latest release:** v2.0.0-beta.7 · **Active development:** v2.0.0-beta.8 (unreleased)
 >
 > **Current implementation:** Engine 1 — Local Static Routing
 >
@@ -8,7 +8,7 @@
 
 ## 1. Current Beta Architecture
 
-DevTether beta.7 is a single Go binary containing the CLI, daemon lifecycle, embedded DNS server, HTTP reverse proxy, router, configuration loader, logger, and supporting utilities.
+DevTether is a single Go binary containing the CLI, daemon lifecycle, embedded DNS server, HTTP reverse proxy, router, configuration loader, logger, and supporting utilities.
 
 There is no current Web GUI, process orchestrator, LAN/WAN tunnel engine, access-control engine, or OS service-install module in the develop tree.
 
@@ -169,7 +169,7 @@ The current API does not support configuration-file writes or YAML hot reload; r
 | `doctor` | Diagnose environment/configuration issues |
 | `version` | Show build information |
 
-Detached logs use the configured log directory. When `settings.log_path` is omitted, the default is `.logs/devtether.log` relative to the config file.
+Detached logs use the configured log directory. When `settings.log_path` is omitted, the default is `.logs/devtether.log` relative to the config file. Log opening is fail-closed: symlinked log directories/files, non-regular files, hard-linked files, and group/world-writable or foreign-owned paths are rejected before the daemon starts (only the final directory and `devtether.log` are protected; intermediate ancestors may be symlinks). Ownership is checked against the invoking user's real UID, matching the ADR-003 runtime-directory rule. The default log directory is shared across execution modes, so a different UID cannot reuse it: run with the same mode that created it, or set `settings.log_path` to a separate directory. Filesystems that do not honor Unix ownership (for example NTFS/exFAT/FUSE mounts) cannot satisfy a different-UID ownership check.
 
 ## 8. Current Initialization Flow
 

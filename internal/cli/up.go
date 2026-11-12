@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -452,26 +451,18 @@ func printStartupSummary(ctx context.Context, cfg *config.Config, info startupIn
 // Readiness is synchronized via an anonymous pipe (FD 3) — no polling.
 func daemonize(cfg *config.Config) error {
 	// Resolve log directory.
-	logDir := cfg.Settings.LogPath
-	if logDir == "" {
-		absConfig, err := filepath.Abs(configPath)
-		if err != nil {
-			return fmt.Errorf("failed to resolve config path: %w", err)
-		}
-		logDir = filepath.Join(filepath.Dir(absConfig), ".logs")
-	}
-
-	//nolint:gosec // Log directory uses 0700 per ADR-003 security model
-	if err := os.MkdirAll(logDir, 0700); err != nil {
-		return fmt.Errorf("failed to create log directory %s: %w", logDir, err)
-	}
-
-	logFile := filepath.Join(logDir, "devtether.log")
-	//nolint:gosec // Log files use 0644 — readable by owner and group for debugging
-	// Start each detached daemon using O_APPEND to retain logs across restarts.
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logDir, err := resolveLogDir(cfg)
 	if err != nil {
-		return fmt.Errorf("failed to open log file %s: %w", logFile, err)
+		return err
+	}
+
+	logFile := logFilePath(logDir)
+	// Open the log safely before spawning: unsafe paths fail closed here and
+	// the detached child is never started. Append mode retains logs across
+	// restarts.
+	f, err := openLogFileForWrite(logDir)
+	if err != nil {
+		return err
 	}
 
 	// Create anonymous pipe for readiness signaling.
@@ -523,7 +514,7 @@ func daemonize(cfg *config.Config) error {
 			return fmt.Errorf("daemon startup timed out — child was terminated; check logs at %s", logFile)
 		}
 		if errors.Is(readErr, io.EOF) {
-			if cause := lastStartupError(logFile); cause != "" {
+			if cause := lastStartupError(logDir); cause != "" {
 				return fmt.Errorf("daemon crashed during startup: %s (full log: %s)", cause, logFile)
 			}
 			return fmt.Errorf("daemon crashed during startup — check logs at %s", logFile)
@@ -547,8 +538,8 @@ func daemonize(cfg *config.Config) error {
 // daemon log, without its "Error: " prefix, so a detached startup failure is
 // reported to the user instead of only pointing at the log file. It is
 // best-effort: any read problem or a log without an error line yields "".
-func lastStartupError(logFile string) string {
-	f, err := os.Open(logFile) //nolint:gosec // Log file path is resolved from config
+func lastStartupError(logDir string) string {
+	f, err := openLogFileForRead(logDir)
 	if err != nil {
 		return ""
 	}

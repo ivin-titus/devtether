@@ -5,6 +5,13 @@
 **Branch reviewed:** develop
 **Baseline:** v2.0.0-beta.7 (2026-09-20)
 
+> **Supersession note (beta.8):** This audit's baseline predates the beta.8
+> merges. Statements that route changes require a daemon restart and that live
+> route mutation / YAML hot reload is absent (§2.5, DOC-18) were true then.
+> Runtime route mutation (`devtether routes add` / `routes remove`,
+> `routes --check`) shipped in beta.8 as memory-only IPC changes that never
+> write `devtether.yaml`; see `v2.0.0-beta.8/` for current records.
+
 This audit covers DevTether's own repository documentation only. It is not a portfolio-site audit. It records contradictions, stale status, misleading current-vs-future wording, broken references, and source-of-truth drift across README, docs/, ADRs, CHANGELOG, contributor docs, CI documentation, and workspace records.
 
 ## 1. Current implementation baseline

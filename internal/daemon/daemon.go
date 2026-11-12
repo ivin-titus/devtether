@@ -21,7 +21,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -37,7 +36,15 @@ import (
 
 // CheckRunning returns an error if another daemon instance is already active.
 func CheckRunning(ctx context.Context) error {
-	socketPath := SocketPath()
+	socketPath, err := SocketPath()
+	if err != nil {
+		// No runtime directory means no daemon. Any other resolution failure
+		// (e.g. an unsafe directory) is surfaced, never treated as "not running".
+		if errors.Is(err, ErrNoRuntimeDir) {
+			return nil
+		}
+		return fmt.Errorf("daemon: cannot resolve IPC socket path: %w", err)
+	}
 	if _, statErr := os.Stat(socketPath); statErr == nil {
 		dialer := net.Dialer{Timeout: 1 * time.Second}
 		conn, dialErr := dialer.DialContext(ctx, "unix", socketPath)
@@ -57,9 +64,11 @@ func CheckRunning(ctx context.Context) error {
 }
 
 // SocketPath returns the platform-appropriate path for the IPC socket.
-// Uses the same directory resolution as RuntimeDir (see lifecycle.go).
-func SocketPath() string {
-	return filepath.Join(runtimeDirPath(), "devtether.sock")
+// It resolves the validated runtime directory without creating it: an absent
+// runtime directory yields ErrNoRuntimeDir (wrapping os.ErrNotExist), and an
+// unsafe directory yields an error, so no caller can dial an unvalidated path.
+func SocketPath() (string, error) {
+	return runtimeFilePath("devtether.sock")
 }
 
 // Server runs an HTTP API over a Unix domain socket for IPC communication.
@@ -84,7 +93,6 @@ func NewServer(engine *router.Engine, tracker *health.Tracker, cancel context.Ca
 		engine:     engine,
 		tracker:    tracker,
 		cancelFunc: cancel,
-		socketPath: SocketPath(),
 		configPath: configPath,
 	}
 }
@@ -110,6 +118,14 @@ func (s *Server) Listen(ctx context.Context) (net.Listener, error) {
 	if _, dirErr := RuntimeDir(); dirErr != nil {
 		return nil, dirErr
 	}
+
+	// Resolve the socket path only after the runtime directory exists, so the
+	// no-create client resolver accepts it.
+	socketPath, socketErr := SocketPath()
+	if socketErr != nil {
+		return nil, socketErr
+	}
+	s.socketPath = socketPath
 
 	// 2. Acquire exclusive instance lock (non-blocking).
 	lockFile, lockErr := AcquireLock()

@@ -2,6 +2,104 @@
 
 Append-only working record. Entries newest-first.
 
+## 2026-11-10 — Detached daemon log UID ownership UX refinement (Devin)
+
+- Owner-side test: `sudo ./devtether up` after deleting `.logs` failed with
+  `owned by uid 1000, not 0`. Investigated before editing.
+- Finding: no code defect. `openLogFileForWrite` creates via `os.MkdirAll`
+  before validation; reproduced on ext4 that root creation yields uid-0
+  dir/file and passes. The uid 1000 implies the path is on a filesystem that
+  does not honor Unix ownership (NTFS/exFAT/FUSE mounted uid=1000) or a
+  pre-existing uid-1000 dir; cannot confirm owner's fs from here.
+- Change (uncommitted): appended actionable recovery guidance to the two
+  UID-mismatch errors only (same execution mode OR separate
+  `settings.log_path`; non-POSIX fs note). No check weakened, no auto
+  repair. Added 4 regression tests (first-run creation ownership/modes,
+  foreign-owner dir/file via synthetic `unix.Stat_t`, concurrent creation).
+  Updated architecture.md + advanced-port-configuration.md. No new deps.
+- Verification: gofmt/vet/build/race-tests/lint(0)/cross-compile(linux+darwin)/
+  diff-check pass; `bash scripts/test.sh` all checks passed (lint/govulncheck
+  skipped by script PATH; lint run manually = 0 issues). Not committed/pushed.
+- Security finding remains open; beta.8 stays open.
+
+## 2026-11-10 — Detached daemon log safe-open: ownership-UID review + commit push (Devin)
+
+- Owner asked for a focused read-only review of the ownership-UID wording
+  discrepancy, then to commit/push the slice.
+- Committed the completed slice as `bcb20c3` (`fix(cli): reject unsafe
+  symlinked daemon log paths`) and pushed to `origin/feature/devin`
+  (one commit ahead of `origin/develop` @ `f897117`). Working tree clean.
+- UID review findings: `internal/cli/logfile.go` uses `os.Getuid()` =
+  **real** UID, not the effective UID claimed in the implementation report.
+  Verified Go semantics (`os.Getuid()`=real, `os.Geteuid()`=effective) and
+  sudo behavior (`sudo id -u` and `sudo id -ru` both return `0`, so real ==
+  effective under sudo). In every supported execution mode (normal, sudo,
+  setcap) real == effective, so the choice has no behavioral effect.
+  `logfile.go` matches the existing `internal/daemon/lifecycle.go`
+  ownership check (also `os.Getuid()`); no production code uses
+  `os.Geteuid()`. Code comments/docs/tracker say "current user" and are
+  consistent; only pre-mortem PM-6 said "effective uid" (corrected).
+- Recommendation (pending owner decision, no production code changed): keep
+  `os.Getuid()` for consistency with `lifecycle.go` and fail-closed edge
+  behavior; `os.Geteuid()` would match file-creation ownership semantics but
+  diverges from the runtime-dir check and is behaviorally identical in all
+  supported modes.
+- Corrected workspace artifacts only (no production code): tracker status
+  now records commit `bcb20c3` pushed; audit_report PM-6 wording fixed and a
+  follow-up UID-review subsection added. Security finding remains open;
+  beta.8 stays open.
+
+## 2026-11-10 — Detached daemon log safe-open slice implemented + verified (Devin)
+
+- Implemented the owner-approved safe-open helper `internal/cli/logfile.go`
+  using `golang.org/x/sys/unix` (`Open`/`Openat`/`Fstat`), promoted `x/sys`
+  to a direct dependency (`go mod tidy`; `go.mod` only, `go.sum` unchanged).
+- Wired all three call sites through it: `daemonize()` writes,
+  `lastStartupError()` reads, `devtether logs` reads. Unsafe paths fail
+  closed before the detached child is spawned; FD 3 readiness, append mode,
+  0700/0644 modes, and startup-error reporting preserved.
+- Added 18 isolated `t.TempDir()` regression tests in
+  `internal/cli/logfile_test.go` (file/dir symlink, trailing-slash dir
+  symlink, custom `log_path` symlink, hardlink, group/world-writable
+  dir+file, FIFO non-regular, safe read, `lastStartupError` symlink,
+  daemonize fail-before-spawn, daemonize safe-path readiness round-trip,
+  relative/default path resolution). Fake-child `TestMain` re-execs the
+  test binary and signals readiness on FD 3.
+- Discovered + handled two Linux quirks in tests/code: `ENOTDIR` (not
+  `ELOOP`) for `O_DIRECTORY|O_NOFOLLOW` on a symlink-to-dir (message-only
+  `Lstat` after failed open, never the security boundary), and trailing-
+  slash `O_NOFOLLOW` bypass (neutralized by `filepath.Clean`).
+- Verification: gofmt clean; `go test -race -count=1 ./internal/...` all
+  ok; `go build ./...` ok; `go vet ./...` ok; `golangci-lint` v2.15.0
+  `0 issues`; cross-compile linux/darwin amd64+arm64 ok; `git diff
+  --check` clean. `bash scripts/test.sh` module-hygiene fails only due to
+  intentionally uncommitted `go.mod` (x/sys promotion); govulncheck not
+  installed. Details in `audit_report.md` §1l.
+- Updated docs: `docs/advanced-port-configuration.md` §3 and
+  `docs/architecture.md` detached-logs note now state the fail-closed
+  boundary (final dir + `devtether.log` only; intermediate ancestors may be
+  symlinks). Tracker task marked implemented+verified.
+- No commit/push/PR/merge/release. beta.8 open. Security finding NOT marked
+  resolved — awaiting independent review.
+
+## 2026-11-10 — Detached daemon log safe-open slice started (Devin)
+
+- Owner approved the read-only investigation's recommended remediation and
+  requested implementation as one isolated security slice on `feature/devin`
+  (baseline `develop` @ `f897117`). No commit/PR/release; beta.8 stays open;
+  the security finding stays unresolved until independent review.
+- Verified branch state: local `feature/devin` created tracking
+  `origin/feature/devin` @ `f897117`, clean tree, `f897117` is the baseline.
+- Pre-mortem recorded in `audit_report.md` §1l (PM-1..PM-8): final-component-
+  only `O_NOFOLLOW` boundary, fd-anchored `Openat`+`Fstat` (no path-based
+  check-then-open), hard-link rejection via `Nlink==1`, FIFO/device rejection
+  via `S_ISREG`+`O_NONBLOCK`, umask/ownership strictness, portability
+  (linux/darwin amd64+arm64), scope exclusions.
+- Tracker: new `[Security]` active task added.
+- Next: implement `internal/cli/logfile.go`, wire `daemonize()`/
+  `lastStartupError()`/`devtether logs`, add regression tests, run full
+  verification, update docs.
+
 ## 2026-11-10 — Independent audit of Slice 4 Batch 2 + 2.1; workspace reconciliation (Devin)
 
 - Owner requested a read-only independent audit of the combined Batch 2
@@ -354,3 +452,98 @@ Brief pre-mortem before Slice 1 edits, verified against `develop` baseline:
 - Next: independent pre-mortem of the design → first implementation slice
   proposal → owner approval gate before any production code.
 - No commits, pushes, PRs, or release-completion claims yet.
+
+## 2026-11-10 — Slice 0 runtime isolation authorized + pre-mortem (Devin)
+
+- Owner authorized Slice 0 (runtime-directory isolation + secure resolution
+  only) after three read-only architecture reviews, with one mandatory
+  correction: Linux returns `ENOTDIR` (not `ELOOP`) for
+  `O_DIRECTORY|O_NOFOLLOW` on a symlink-to-dir; walker must handle both via
+  `Lstat`.
+- Recorded scope + pre-mortem in `audit_report.md` §1n (PM-A..PM-E).
+- No log migration / `settings.log_path` change / state-dir work in this
+  slice; finding stays open; beta.8 stays open. No commit/push/PR.
+
+## 2026-11-11 — Slice 0 implemented + verified, awaiting independent audit (Devin)
+
+- Implemented the approved secure runtime-directory resolver
+  (`internal/daemon/securepath.go`) and wired it through `lifecycle.go`,
+  `daemon.go`, `client.go`, and `doctor.go`; `SocketPath`/`LockPath`/`PIDPath`/
+  `noncePath` are now error-returning so no client can dial an unvalidated
+  path.
+- Implementation surfaced two design corrections, both recorded in
+  `audit_report.md` §1o: (1) fallback to the temp runtime dir happens only on
+  an invalid XDG *base* (`errInvalidRuntimeBase`), never on an absent/unsafe
+  leaf; (2) uid-0 root-owned dirs classify as trusted-system, so XDG/temp
+  ownership is checked from the stat directly.
+- Verification: race tests, build, vet, scripts/test.sh, golangci-lint (0
+  issues), linux+darwin cross-compile all pass; end-to-end CLI checks
+  confirmed not-running semantics, unsafe-path errors staying distinct, and
+  the `sudo -E` per-UID isolation invariant (root used `/tmp/devtether-0`,
+  user XDG untouched).
+- macOS runtime behavior remains unverified (cross-compile only). Root-gated
+  coverage at that point was the system-alias test only; actual cross-UID
+  leaf ownership had synthetic-UID policy tests plus manual `sudo -E` E2E, no
+  committed real-ownership test (corrected in §1p).
+- Changes are UNCOMMITTED on `feature/devin` @ `71e9dec` (8 modified + 2 new
+  files). Stopping for independent read-only audit; no commit/push/PR; finding
+  unresolved; beta.8 open.
+
+## 2026-11-11 — Slice 0 independent audit: ACCEPT WITH CONDITIONS + corrections (Devin)
+
+- Independent read-only audit of the Slice 0 working-tree diff: no confirmed
+  production defect; verdict ACCEPT WITH CONDITIONS. Conditions: real
+  foreign-ownership test, client no-dial test, doc correction, optional ELOOP
+  coverage. Recorded in `audit_report.md` §1p.
+- Implemented (tests/docs only, no production change):
+  - `TestForeignOwnedLeafRejectedReal` — root-gated, `chown`s the leaf to a
+    genuinely different UID and asserts the production resolver rejects it
+    with no usable path. Executed as real root under `sudo`: PASS; skips
+    cleanly unprivileged.
+  - `TestSocketClientAbsentLeafNoDial` (`client_test.go`) — absent leaf makes
+    `DialContext` return `ErrNoRuntimeDir`/`os.ErrNotExist` with a nil
+    connection; the sentinel proves no dial occurred. PASS.
+  - `TestSymlinkToFileLeafRejected` — an errno probe showed Linux returns
+    ENOTDIR (never ELOOP) for `O_DIRECTORY|O_NOFOLLOW` on any symlink leaf, so
+    this covers the symlink/non-directory disambiguation on the Linux path;
+    ELOOP is POSIX/BSD-only and remains unverified until macOS runtime
+    testing. Not claimed as ELOOP coverage.
+  - Corrected the §1o/diary wording that overstated root-gated coverage.
+- Verification: gofmt/vet clean; `go test -race -count=1 ./internal/...` all
+  ok unprivileged; `go build ./...` clean; `bash scripts/test.sh` 6 passed /
+  2 skipped; golangci-lint 0 issues. Root (`sudo -n`, `-race` binary):
+  `TestForeignOwnedLeafRejectedReal` and `TestRootOwnedSystemAlias` PASS, all
+  other securepath/client tests PASS. Running the whole daemon package as uid
+  0 makes the two synthetic-UID policy tests fail (self/foreign UIDs coincide
+  for root) — an unsupported test mode, not a defect; they pass unprivileged.
+- Changes remain UNCOMMITTED on `feature/devin` @ `71e9dec`. Stopping for a
+  further independent read-only audit of the corrections; not self-accepted.
+  Finding unresolved; beta.8 open.
+
+## 2026-11-11 — Complete-branch integration audit + record reconciliation (Devin)
+
+- Branch state: `feature/devin` pushed @ `c716f03`
+  (`c716f033aab656f9475b22022b58dded0828c835`), 6 ahead / 0 behind `develop`
+  @ `f897117`. Commits: `bcb20c3` log safe-open, `d99cfff` docs, `71e9dec`
+  ownership UX, `1e5f152` Slice 0, `73a14d6` workspace sync + test.sh exec
+  bit, `c716f03` Go 1.27.4 (GO-2026-6859). Working tree clean.
+- Independent read-only audit of the COMPLETE pushed branch (all 6 commits),
+  executed in detached worktree `/home/ubuntu/devtether-audit` @ `c716f03`:
+  verdict **ACCEPT WITH CONDITIONS**. No confirmed defects, no credible
+  remaining attack path, no blocking verification gaps. Recorded as new
+  `audit_report.md` §1q.
+- Verification executed: `make test` 8 passed / 0 skipped; `go test -race
+  -count=1 ./...` all ok; golangci-lint 0 issues; govulncheck clean;
+  build/vet clean; linux+amd64/arm64, darwin amd64/arm64 cross-builds PASS;
+  root-gated tests under `sudo -n` PASS (`TestForeignOwnedLeafRejectedReal`,
+  `TestRootOwnedSystemAlias`); built-binary E2E PASS (symlink rejection,
+  absent-leaf semantics, `0777` leaf rejection). No CI exists for this branch
+  (`ci.yml` triggers only on `main`/`develop`).
+- The four audit conditions were documentation-only and were corrected in the
+  same working tree (uncommitted): B8-1 marked resolved in §2, §1q added and
+  tracker re-attributed, tracker HEAD/counts refreshed to `c716f03` / 6
+  commits / 22 logfile tests, this diary entry appended, ponytail skill Go
+  baseline corrected to 1.27.4.
+- macOS runtime verification remains outstanding (cross-compile only).
+  Owner acceptance and owner-signed squash integration pending. Finding
+  unresolved; beta.8 open.

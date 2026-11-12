@@ -104,7 +104,7 @@ Routes can also be managed at runtime: `devtether routes add` creates an ephemer
 ### HTTP reverse proxy
 
 - Default configured bind: `127.0.0.1:80`.
-- On permission/address-in-use failure, beta.7 falls back to `127.0.0.1:8080`.
+- On permission/address-in-use failure, the proxy falls back to `127.0.0.1:8080`.
 - There is no OS-assigned `:0` fallback.
 - Backend targets are loopback-only.
 - Host validation is strict.
@@ -130,7 +130,7 @@ The daemon uses a Unix-socket IPC API, instance locking, PID and nonce state, an
 
 ### Current setup integration
 
-`devtether init` can generate the current config and, with explicit consent, configure supported Linux/macOS DNS resolver integrations. The default DNS port is always `5335`; changing it manually requires aligning the host resolver configuration.
+`devtether init` can generate the current config and, with explicit consent, configure supported Linux/macOS DNS resolver integrations. The default DNS port is `5335`; changing it manually requires aligning the host resolver configuration.
 
 ---
 
@@ -184,7 +184,7 @@ The longer-term architecture is designed to combine local DNS, HTTP routing, pro
 
 ### Current
 
-- Go 1.27.1+
+- Go 1.27.4+
 - `miekg/dns`
 - `spf13/cobra`
 - `gopkg.in/yaml.v3`

@@ -567,7 +567,7 @@ implementation session)
 1. Tracker status reconciliation (this update): Batch 2.1 was recorded as
    uncommitted/pending review before the push; now recorded as pushed at
    `1bedca7` and reviewed.
-2. Owner-side TTY verification (from §1g) remains pending.
+2. Owner-side TTY verification (from §1g) remains pending. *(Superseded 2026-11-11: owner confirmed all normal interactive TTY flows pass on Zorin OS 18; abnormal-case QA deferred to final pre-release QA.)*
 3. The `printRoutes` UNKNOWN footnote also appears in config-fallback mode
    (daemon unavailable), where proxied traffic and `--check` cannot
    currently produce observations. The wording ("may come from") is not
@@ -577,10 +577,560 @@ implementation session)
 Slice 4 and beta.8 remain open; no CHANGELOG entry; the separately pending
 security finding is untouched.
 
+## §1l Detached daemon log safe-open remediation (2026-11-10)
+
+### Pre-mortem (design review before implementation)
+
+Finding (Devin Security, medium): `daemonize()` in `internal/cli/up.go`
+opened `<logDir>/devtether.log` with `os.OpenFile(..., O_CREATE|O_WRONLY|
+O_APPEND, 0644)` after `os.MkdirAll(logDir, 0700)`. Both calls follow
+symlinks, so a malicious repository could pre-place `.logs/devtether.log`
+as a symlink (or `.logs` itself as a symlink) and redirect detached daemon
+stdout/stderr — including access-log lines carrying request host/path/query
+— into an attacker-chosen file such as a shell startup file. The same
+unsafe path was reopened by `lastStartupError()` and `devtether logs`.
+
+Confirmed against `develop` @ `f897117`: the write path, the read paths,
+and the CR/LF-only access-log sanitizer (`internal/proxy/middleware.go`)
+with raw `log.Println` output (`internal/logger/logger.go`) are all present
+as described. The command-execution chain remains conditional (target must
+be writable, daemon must emit logs, a client request must arrive, and the
+target must later be interpreted by a shell); the arbitrary-file-write
+primitive itself is confirmed.
+
+Approved design (owner, this session): one CLI-local safe-open helper
+using `golang.org/x/sys/unix` (promoted from indirect to direct), shared
+by `daemonize()` writes, `lastStartupError()` reads, and `devtether logs`
+reads. Directory and file are opened relative to an already-open directory
+fd with `O_NOFOLLOW`; both fds are validated with `Fstat` after open.
+Default `<config-dir>/.logs` and custom `settings.log_path` semantics
+(including CWD-relative resolution) are preserved; append mode and modes
+0700/0644 are preserved; FD 3 readiness and startup-error reporting are
+preserved. No default-path migration, no proxy-log sanitization change, no
+commit/PR.
+
+Pre-mortem review of the design against ADR-003, ADR-006, and
+`docs/engineering-standards.md`:
+
+- **PM-1 (final-component-only boundary).** `O_NOFOLLOW` protects only the
+  final directory component and the fixed `devtether.log` name; intermediate
+  ancestors may still be symlinks (required for macOS `/var` →
+  `/private/var` and absolute custom paths). This is deliberate and must
+  not be described as stronger protection. Mitigation: document the
+  boundary explicitly in code comments and the final report.
+- **PM-2 (TOCTOU).** A path-based `Lstat`-then-open leaves a swap race.
+  The design opens the directory with `O_DIRECTORY|O_NOFOLLOW`, then
+  `Openat(dirFD, "devtether.log", ...)` with `O_NOFOLLOW`, then `Fstat`s
+  both fds. No path-based check is the security boundary. Residual race:
+  an attacker who can rename/replace the final directory inode between
+  `MkdirAll` and `open` still cannot redirect the open, because the open
+  is anchored to the fd and `O_NOFOLLOW` rejects symlink swaps of the final
+  components.
+- **PM-3 (hard links bypass `O_NOFOLLOW`).** Covered by requiring
+  `st.Nlink == 1` on the opened file inode (post-open `Fstat`, not a
+  pre-open path check).
+- **PM-4 (FIFO/device hang or redirect).** Opening a FIFO `O_WRONLY`
+  without `O_NONBLOCK` blocks forever. The helper opens with
+  `O_NONBLOCK`, validates `S_ISREG` via `Fstat`, and rejects non-regular
+  files; regular-file I/O ignores `O_NONBLOCK`, and the fd is wrapped with
+  `os.NewFile` (kindNewFile → not added to the runtime poller).
+- **PM-5 (umask).** `MkdirAll(dir, 0700)` and `OpenFile(..., 0644)` already
+  produce owner-only dir and non-group/world-writable file modes under any
+  umask that does not strip owner bits; the post-open permission check
+  rejects pre-existing loose files/dirs rather than chmod'ing them
+  (fail closed, no silent permission changes).
+- **PM-6 (ownership strictness).** Directory and file must be owned by the
+  process real UID (`os.Getuid()`), matching ADR-003's runtime-dir
+  ownership check (`internal/daemon/lifecycle.go` uses the same
+  `os.Getuid()`). In every supported execution mode the real and effective
+  UIDs are equal (verified: `sudo` sets both to root), so this is
+  behaviourally identical to an effective-UID check. Running the daemon as
+  root (sudo) against a non-root-owned `.logs` will now fail closed; this
+  is consistent with ADR-003 and is recorded as a known behavior change,
+  not a defect. See the follow-up UID review below.
+- **PM-7 (portability).** `unix.Openat`/`Fstat` exist on linux/amd64,
+  linux/arm64, darwin/amd64, darwin/arm64 (verified in `x/sys@v0.49.0`
+  sources and by cross-compilation). `Stat_t.Mode/Nlink/Uid` types differ
+  across platforms; the helper relies on untyped `x/sys/unix` mode
+  constants so `st.Mode` (uint32 on linux, uint16 on darwin) needs no
+  conversion. Windows is unsupported per ADR-006.
+- **PM-8 (scope creep).** Proxy log sanitization, default-path migration,
+  and `daemon.RuntimeDir()` reuse are explicitly out of scope. The helper
+  is CLI-local (`internal/cli`) because all three call sites live there;
+  no new shared package.
+
+### Verification evidence
+
+Implemented on `feature/devin` (uncommitted, per owner stop condition). New
+CLI-local helper `internal/cli/logfile.go`; `daemonize()` writes,
+`lastStartupError()` reads, and `devtether logs` reads all route through it.
+`golang.org/x/sys` promoted to a direct dependency (`go.mod`, no `go.sum`
+change). 18 regression tests in `internal/cli/logfile_test.go`.
+
+Checks run (Linux amd64, go1.27.3):
+
+- `gofmt -l` on changed Go files — clean (no output).
+- `go test -race -count=1 ./internal/...` — all packages `ok`.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `golangci-lint run` (v2.15.0, repo CI config) `./...` — `0 issues`.
+- Cross-compile `GOOS/GOARCH` = linux/amd64, linux/arm64, darwin/amd64,
+  darwin/arm64 `go build ./...` — all pass (confirms `unix.Openat`/`Fstat`
+  and untyped mode constants compile on both supported platforms).
+- `git diff --check` — clean.
+- `govulncheck` — not installed on this machine; `scripts/test.sh` skips it
+  when absent, so it did not run.
+
+`bash scripts/test.sh` — module integrity (`go mod verify`) passed; the
+module-hygiene step FAILED with "go.mod or go.sum has uncommitted changes
+after 'go mod tidy'". This is expected and not a code defect: the slice is
+intentionally uncommitted (owner stop condition), and the `go mod tidy`
+promotion of `x/sys` to a direct dependency is itself an uncommitted
+`go.mod` change. The script exits before its lint/vet/test steps; those were
+run manually above with equivalent or stricter commands (race-enabled tests,
+full lint, vet). Re-run `bash scripts/test.sh` after the owner commits.
+
+Behavior notes discovered during implementation and locked in by tests:
+
+- Linux returns `ENOTDIR` (not `ELOOP`) for `O_DIRECTORY|O_NOFOLLOW` on a
+  symlink-to-directory; the helper maps this (and `ELOOP`) to a clear
+  "is a symlink (unsafe)" error via a post-failure `Lstat` used only for the
+  message, never as the security boundary.
+- A trailing slash on the directory path would bypass `O_NOFOLLOW`;
+  `filepath.Clean` strips it. Regression test added
+  (`...RejectsDirSymlinkTrailingSlash`).
+- FIFO log files are rejected without blocking via `O_NONBLOCK` + post-open
+  `S_ISREG` `Fstat` check.
+
+### Follow-up: ownership UID review + commit (2026-11-10)
+
+Owner requested a focused read-only review of the ownership-UID wording
+after the slice was committed. Findings:
+
+- `internal/cli/logfile.go` validates ownership with `os.Getuid()`, which
+  returns the **real** UID, not the effective UID. The implementation
+  report's "effective uid" wording was inaccurate; corrected in PM-6 above.
+- Go semantics: `os.Getuid()` = real UID (`getuid(2)`), `os.Geteuid()` =
+  effective UID (`geteuid(2)`). Confirmed by a probe program (both 1000 in
+  normal execution).
+- Sudo behavior: `sudo id -u` and `sudo id -ru` both return `0`, so under
+  `sudo devtether up -d` the real and effective UIDs are both root. In
+  every supported execution mode (normal user, `sudo`, `setcap` for port
+  80) real UID == effective UID, so the real-vs-effective choice has **no
+  behavioral effect** on any supported flow.
+- Consistency: the only other production ownership check,
+  `internal/daemon/lifecycle.go` `validateDirInfo`, uses the same
+  `os.Getuid()`. No production code uses `os.Geteuid()`. `logfile.go` is
+  therefore consistent with the established ADR-003 interpretation of
+  "current user."
+- Code comments, user docs, and the tracker all say "current user" /
+  "current-user ownership," which matches `os.Getuid()`; only the
+  pre-mortem PM-6 said "effective uid" (now corrected).
+- Root-daemon behavior: `sudo` sets both UIDs to root, so a root daemon
+  requires root-owned `.logs`; a non-root-owned `.logs` fails closed. This
+  matches PM-6's behavioral claim (verified) and ADR-003's root-owned
+  runtime-location posture.
+
+Recommendation (pending owner decision; no production code changed): keep
+`os.Getuid()` (real UID) for consistency with `lifecycle.go` and the
+fail-closed direction in theoretical real≠effective edge cases. The
+alternative `os.Geteuid()` would match file-creation ownership semantics
+but would diverge from the existing runtime-dir check and is not
+behaviourally different in any supported mode; switching would warrant a
+separate slice that also aligns `lifecycle.go`.
+
+Commit: the security slice is committed as `bcb20c3`
+(`fix(cli): reject unsafe symlinked daemon log paths`) and pushed to
+`origin/feature/devin`, one commit ahead of `origin/develop` @ `f897117`.
+The `scripts/test.sh` module-hygiene failure recorded above was pre-commit
+only (uncommitted `go.mod`) and is resolved by the commit.
+
+## §1m Detached daemon log UID ownership UX refinement (2026-11-10)
+
+### Trigger
+
+Owner-side test: after deleting the default `.logs` directory,
+`sudo ./devtether up` failed with `log directory ... is owned by uid 1000,
+not 0 (unsafe)` even though a fresh root-owned directory should have been
+created.
+
+### Investigation findings
+
+- Creation order is correct: `openLogFileForWrite` calls `os.MkdirAll(logDir,
+  0700)` before `openLogDir` validation (`internal/cli/logfile.go`).
+- Reproduced on this host (ext4): as root, `MkdirAll`+`OpenFile` create a
+  uid-0 directory/file (`getuid=0 geteuid=0`, `owner_uid=0`, mode 700/644), so
+  the safe-open validation passes for a freshly created root-owned `.logs`.
+  No code defect in creation or validation.
+- The observed uid 1000 means `.logs` was not freshly created as root. The
+  project path `/media/ivintitus/Data/...` is a secondary/mounted drive; the
+  most plausible cause is a filesystem that does not honor Unix ownership
+  (NTFS/exFAT/FUSE mounted with `uid=1000`), which reports every file as the
+  mounting user regardless of creator. The alternative (a pre-existing
+  uid-1000 `.logs`) cannot be excluded from here but was not assumed.
+- The executed binary is not stale in any meaningful way: the error string
+  matches the reviewed code exactly.
+
+### Pre-mortem
+
+- PM-1: Appending guidance to non-ownership errors would leak irrelevant
+  advice. Mitigation: guidance is appended only by `logOwnershipError`, used
+  solely for UID mismatches.
+- PM-2: Synthetic `unix.Stat_t` tests are platform-fragile (`Mode` type
+  differs linux uint32 / darwin uint16). Mitigation: tests obtain a real
+  `unix.Stat_t` via `unix.Fstat` and only increment `Uid` (uint32 on both
+  platforms); no root/sudo required.
+- PM-3: Changing the UID error text could break existing assertions.
+  Mitigation: no existing test asserts the UID message; the new message
+  retains the `owned by uid`/`unsafe` prefix.
+- PM-4: Recommending automatic ownership repair would weaken the safe-open.
+  Mitigation: guidance names only the two supported paths (same execution
+  mode, or a separate `settings.log_path`) and performs no chown/chmod/delete.
+
+### Changes (uncommitted)
+
+- `internal/cli/logfile.go`: added `logOwnershipGuidance` + `logOwnershipError`;
+  the two UID-mismatch errors now include the path, actual owner UID, expected
+  UID, and recovery guidance. No check weakened; no behavior change.
+- `internal/cli/logfile_test.go`: added `statPath`/`ownerUID` helpers and four
+  regression tests (first-run creation ownership/modes, foreign-owner dir/file
+  rejection, concurrent creation race safety).
+- `docs/architecture.md`, `docs/advanced-port-configuration.md`: documented
+  the real-UID ownership model, per-mode recovery, and the non-POSIX
+  filesystem limitation.
+
+### Verification evidence
+
+- `gofmt -l` clean; `go vet ./...` pass; `go build ./...` pass.
+- `go test -race -count=1 ./internal/...` all `ok` (22 cli tests incl. 4 new).
+- `golangci-lint run ./...` (v2.15.0) 0 issues.
+- Cross-compile linux/darwin amd64/arm64 pass.
+- `git diff --check` clean.
+- `bash scripts/test.sh`: module integrity + hygiene + vet + race tests +
+  cross-compile + build all pass (golangci-lint/govulncheck skipped by the
+  script because they are not on its PATH; golangci-lint run manually = 0
+  issues; govulncheck not installed).
+
+### Remaining limitations
+
+- Filesystems that do not honor Unix ownership cannot satisfy a different-UID
+  ownership check; the error now points the user at a native filesystem via
+  `settings.log_path`. This is environmental, not a code defect.
+- Intermediate ancestors may still be symlinks (unchanged, documented).
+
+## §1n Slice 0 pre-mortem — runtime-directory isolation (2026-11-10, Devin)
+
+### Scope
+
+Runtime-directory isolation + secure resolution ONLY (owner-authorized). No
+log migration, no `settings.log_path` change, no state-dir work, no finding
+closure, beta.8 stays open.
+
+### Approved design (three owner read-only reviews)
+
+- `resolveRuntimeDir(create bool)`; `create=true` secure-creates+validates the
+  leaf; `create=false` requires an existing validated leaf; absent →
+  `ErrNoRuntimeDir` wrapping `os.ErrNotExist`; never return an uncreated
+  candidate as a connectable path.
+- Canonicalize ONLY the UID-correct home; reject arbitrary symlinks in
+  env-provided paths; follow only root-owned absolute system aliases into
+  trusted targets.
+- Descriptor-relative traversal, FD pinning, post-open `Fstat`; sticky-temp
+  exception; `XDG_RUNTIME_DIR` exact-`0700`; production UID fixed to
+  `os.Getuid()`; injected UID only in unexported helpers/tests.
+- `RootDaemonMayBeRunning` best-effort, Lstat-only, documented heuristic.
+- Owner correction: Linux returns `ENOTDIR` (not `ELOOP`) for
+  `O_DIRECTORY|O_NOFOLLOW` on a symlink-to-dir; the walker must handle BOTH,
+  using `Lstat` to confirm a symlink before applying the alias policy; use
+  `O_NOFOLLOW` (not `O_NOFILE`).
+
+### Pre-mortem risks
+
+- PM-A: `ENOTDIR`/`ELOOP` mishandling → symlink-to-dir treated as a plain
+  non-dir error or wrongly followed. Mitigation: `Lstat` on both, alias only
+  when root-owned + absolute symlink; regression tests for `ENOTDIR`.
+- PM-B: absent-leaf race → client dials an attacker-created predictable path.
+  Mitigation: `create=false` never returns a candidate for an absent leaf.
+- PM-C: existing `0777` runtime dir accepted (`validateDirInfo` lacked a perm
+  check). Mitigation: `classifyDir` enforces not-group/world-writable.
+- PM-D: API ripple (`SocketPath`/`LockPath`/`PIDPath` → error returns).
+  Mitigation: update every caller; preserve not-running semantics via
+  `os.ErrNotExist` wrapping; do not broadly convert unsafe-path errors into
+  "not running".
+- PM-E: macOS `/var` alias. Mitigation: root-owned absolute alias exception;
+  on-Mac runtime verification still pending (cross-compile only).
+
+## §1o Slice 0 implementation + verification (2026-11-11, Devin)
+
+### Changed files
+
+- `internal/daemon/securepath.go` (new) — `ErrNoRuntimeDir`, `classifyStat`,
+  `secureOpenDir`/`secureOpenDirDepth` (descriptor-relative walk from `/` with
+  `O_NOFOLLOW`, FD pinning, depth cap 40), `rootAliasTarget` (root-owned
+  absolute alias only in trusted-system territory), `secureEnsureLeaf`
+  (openat/`mkdirat` leaf, `ELOOP`+`ENOTDIR` handling with `Fstatat
+  AT_SYMLINK_NOFOLLOW` to keep the explicit ADR-003 symlink message),
+  `secureTempBase` (sticky-temp/user-owned, trusted-system for uid 0),
+  `xdgRuntimeDir` (exact `0700`, ownership from stat), `tempRuntimeDir`,
+  `resolveRuntimeDirUID`/`resolveRuntimeDir` (production UID fixed to
+  `os.Getuid()`), `runtimeFilePath`.
+- `internal/daemon/securepath_test.go` (new) — policy + resolver matrix.
+- `internal/daemon/lifecycle.go` — `RuntimeDir()` delegates to
+  `resolveRuntimeDir(true)`; `LockPath`/`PIDPath`/`noncePath` now return
+  `(string, error)`; all lifecycle helpers propagate resolution errors;
+  `DaemonRunning`/`WaitForExit` map `ErrNoRuntimeDir` to no-daemon;
+  `RootDaemonMayBeRunning` rewritten as documented best-effort multi-candidate
+  Lstat heuristic (never connects).
+- `internal/daemon/daemon.go` — `SocketPath()` returns `(string, error)`;
+  `CheckRunning` treats `ErrNoRuntimeDir` as not-running and surfaces other
+  resolution errors; `NewServer` no longer resolves the socket eagerly —
+  `Listen` resolves it after `RuntimeDir()` creation.
+- `internal/daemon/client.go` — `socketClient` resolves `SocketPath()` on
+  every dial, before any connection attempt.
+- `internal/cli/doctor.go` — socket check never dials an unvalidated path;
+  not-exist resolution passes, other resolution errors warn.
+- `internal/daemon/lifecycle_test.go`, `internal/daemon/stress_test.go` —
+  signature updates; test fixtures chmod XDG bases to exact `0700`.
+
+### Design decisions realized during implementation
+
+- `errInvalidRuntimeBase` sentinel: fallback to the temporary runtime
+  directory happens ONLY when the XDG base itself is invalid. An absent or
+  unsafe XDG leaf is authoritative and never bypassed by fallback (this
+  preserves the explicit symlink/`0777` refusals instead of silently using
+  `/tmp`).
+- `xdgRuntimeDir` checks ownership from the stat directly rather than the
+  walk class, because for uid 0 a root-owned directory classifies as
+  trusted-system, not user-owned; without this, root's own `/run/user/0`
+  would have been rejected.
+- `secureTempBase` accepts trusted-system directories for uid 0 for the same
+  reason.
+- `secureEnsureLeaf` distinguishes symlink from ordinary non-directory via
+  `Fstatat(AT_SYMLINK_NOFOLLOW)` so the ADR-003 "is a symlink (possible
+  attack)" message is preserved on both `ELOOP` and Linux `ENOTDIR`.
+
+### Verification evidence
+
+- `gofmt` clean on all changed files (pre-existing gofmt drift in
+  `internal/cli/status.go` and `internal/dns/server.go` left untouched —
+  unrelated to this slice).
+- `go test -race -count=1 ./internal/...` — all packages ok.
+- `go build ./...`, `go vet ./...` — clean.
+- `golangci-lint run ./internal/...` (v2.15.0) — 0 issues.
+- `bash scripts/test.sh` — all checks passed (6 passed, 2 skipped:
+  govulncheck/golangci-lint not on PATH; golangci-lint run manually above).
+- Cross-compilation: linux/arm64, darwin/amd64, darwin/arm64 all build.
+  This is cross-compilation only, NOT macOS runtime verification.
+- New regression coverage: `0777` existing leaf rejected; acceptable leaf
+  perms accepted; XDG non-`0700` rejected; absent leaf → `ErrNoRuntimeDir`
+  wrapping `os.ErrNotExist` with no usable path from `SocketPath()`;
+  foreign-owned leaf (synthetic uid) rejected; symlinked leaf rejected (both
+  `ELOOP`/`ENOTDIR`); user-controlled symlinks in XDG/TMPDIR rejected;
+  sticky-temp child cases (symlink/foreign/`0777`/`0700`); temp fallback
+  creates isolated per-UID `0700` leaf; `RootDaemonMayBeRunning` side-effect
+  free. Test coverage at that point: synthetic-UID foreign-ownership policy
+  tests plus ONE root-gated test (`TestRootOwnedSystemAlias`); actual
+  cross-UID leaf ownership had no committed test (manual `sudo -E` E2E only).
+  Corrected in §1p after the independent audit.
+- End-to-end (built binary, isolated `XDG_RUNTIME_DIR`):
+  - Absent leaf: `status` → "daemon is not running" (exit 1); `down` →
+    "not running"; `logs` unchanged.
+  - Existing leaf, no daemon: `status` → "not running".
+  - `0777` leaf: `status` → explicit unsafe-permissions error, NOT
+    "not running" (unsafe-path errors are not converted to not-running).
+  - `doctor`: reports the resolution problem as a warning, never dials.
+  - `up -d` / `status` / `down` cycle works; socket/PID/nonce removed on
+    shutdown while the leaf dir + lock persist.
+  - `sudo -E` with the user's `XDG_RUNTIME_DIR` preserved: root did NOT use
+    the user's XDG leaf (it stayed empty); root created
+    `/tmp/devtether-0` with root-owned socket/lock/PID/nonce — the per-UID
+    isolation invariant holds.
+
+### Remaining limitations
+
+- macOS filesystem behaviors (`O_NOFOLLOW` `ELOOP`/`ENOTDIR`, `mkdirat`,
+  `os/user` home resolution, `/var` alias, `$TMPDIR` perms) are verified by
+  source inspection and cross-compilation only; they require on-Mac runtime
+  testing before any macOS verification claim.
+- Root-gated tests (root-owned alias, actual foreign ownership) skip when
+  unprivileged; synthetic-UID policy tests cover the logic.
+- `RootDaemonMayBeRunning` remains a best-effort heuristic (custom root
+  `XDG_RUNTIME_DIR` may be missed); it never connects.
+- Slice 0 is uncommitted; independent read-only audit pending. The security
+  finding remains unresolved; beta.8 stays open.
+
+## §1p Independent audit of Slice 0 + condition corrections (2026-11-11, Devin)
+
+### Independent read-only audit (verdict: ACCEPT WITH CONDITIONS)
+
+Audited the working-tree diff against HEAD `71e9dec` line by line
+(`securepath.go`, all integration points, tests). **No confirmed production
+code defect.** Verification re-executed by the auditor: `go build`, `go vet`,
+`go test -race -count=1 ./internal/...` (all ok), `bash scripts/test.sh`
+(6 passed, 2 skipped), `golangci-lint run ./internal/...` (0 issues).
+Conditions:
+
+1. Add a root-gated test exercising REAL filesystem ownership (chown to a
+   different UID) through the production resolver.
+2. Add a client-level absent-leaf no-dial regression test.
+3. Correct the §1o wording that overstated root-gated ownership coverage.
+4. (Optional) Explicit ELOOP coverage if meaningful without artificial
+   abstractions.
+
+### Corrections implemented (tests/docs only; no production change)
+
+- `TestForeignOwnedLeafRejectedReal` (root-gated, `securepath_test.go`):
+  creates an isolated XDG base (0700, owned by the test process), creates the
+  leaf and `chown`s it to a genuinely different UID (1000, or `nobody` when run
+  as uid 1000), then asserts `resolveRuntimeDir(false)` and `SocketPath()`
+  reject and return an empty path. Skips cleanly when not root; no production
+  UID override. **Executed as real root** via a `-race` test binary under
+  `sudo`: PASS. Fixture cleanup verified (no leftovers under `/tmp` or `/`).
+- `TestSocketClientAbsentLeafNoDial` (new `internal/daemon/client_test.go`):
+  with the XDG leaf absent, `socketClient`'s `DialContext` returns
+  `ErrNoRuntimeDir` wrapping `os.ErrNotExist` and a nil connection. Because a
+  unix dial error can never carry the `ErrNoRuntimeDir` sentinel, this proves
+  the resolution error — not a dial failure — is returned, i.e. no connection
+  attempt occurred. No new abstraction or seam introduced.
+- `TestSymlinkToFileLeafRejected` (ELOOP condition): added, but an errno probe
+  on Linux 6.8 showed `O_DIRECTORY|O_NOFOLLOW` returns **ENOTDIR** for
+  symlink-to-dir, symlink-to-file, and dangling symlinks alike — the ELOOP
+  branch is POSIX/BSD behavior and is NOT reachable on Linux. The test
+  therefore covers the symlink/non-directory disambiguation (`Fstatat
+  AT_SYMLINK_NOFOLLOW`) on the ENOTDIR path, which is the Linux-reachable
+  behavior; ELOOP remains covered only by code inspection and is exercised on
+  macOS runtime verification (still pending). The test comment states this
+  explicitly. Not claimed as ELOOP coverage.
+- Docs: §1o limitation corrected; this section added; `agent_diary.md` entry
+  added; `tracker.md` security task status updated.
+
+### Verification of corrections (2026-11-11, current working tree)
+
+Unprivileged (`ubuntu`, uid 1000):
+
+- `gofmt -l internal/`: only the pre-existing `internal/cli/status.go` and
+  `internal/dns/server.go` drift; no file touched by Slice 0 is listed.
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -race -count=1 ./internal/...`: all packages ok (daemon 25.8s;
+  root-gated tests SKIP).
+- `bash scripts/test.sh`: all checks passed (6 passed, 2 skipped).
+- `golangci-lint run ./internal/...` (v2.15.0): 0 issues.
+- Focused unprivileged run: `TestSocketClientAbsentLeafNoDial` PASS,
+  `TestSymlinkToFileLeafRejected` PASS, `TestForeignOwnedLeafRejectedReal` SKIP
+  ("requires root"), `TestRootOwnedSystemAlias` SKIP.
+
+Root (`sudo -n`, compiled `-race` daemon test binary, scoped `-test.run`):
+
+- `TestForeignOwnedLeafRejectedReal` PASS (real chown to uid 1000 rejected,
+  empty path).
+- `TestRootOwnedSystemAlias` PASS.
+- All other securepath/client tests PASS.
+- `TestClassifyStatPolicy` and `TestUserControlledSymlinksRejected` FAIL when
+  the WHOLE package is run as uid 0. This is an artifact, not a defect: those
+  tests are synthetic-UID policy tests written for a non-root process (as uid
+  0, "self" and "foreign" UIDs coincide, and the uid-0 temp-base exception in
+  `secureTempBase` changes the expectation). They pass unprivileged (see the
+  race run above) and are not part of the root-gated set. Running the package
+  as root is not a supported test mode.
+- Fixture cleanup verified: no `/devtether-alias-test` or
+  `/tmp/devtether-foreign-owner*` left behind.
+
+## §1q Independent full-branch integration audit (2026-11-11, Devin)
+
+Read-only audit of the complete pushed `feature/devin` branch reviewed as one
+integrated change set against `develop` — all commits after the merge base,
+not only the latest. Executed on a detached worktree at the audited HEAD; no
+repository modification. (§1n–§1p above cover the Slice 0 runtime-directory
+slice specifically; this section is the complete-branch integration review.)
+
+### Scope and state
+
+- Audited branch: `feature/devin` @ `c716f033aab656f9475b22022b58dded0828c835`
+  (`c716f03`).
+- Base: `develop` @ `f8971178fd96abde26a2ab24a7ab3ebf00ededab`; merge base =
+  `develop` HEAD. Ahead/behind: **6 ahead, 0 behind**.
+- Commits reviewed: `bcb20c3` (log safe-open), `d99cfff` (UID-review docs),
+  `71e9dec` (log ownership UX), `1e5f152` (Slice 0 runtime-dir isolation),
+  `73a14d6` (workspace sync + `scripts/test.sh` exec bit), `c716f03` (Go
+  1.27.4 bump for GO-2026-6859).
+- Scope: detached log safe-open (`internal/cli/logfile.go`, `up.go`,
+  `logs.go`, `logfile_test.go`), runtime-directory isolation
+  (`internal/daemon/securepath.go`, `lifecycle.go`, `daemon.go`, `client.go`,
+  `cli/doctor.go` + tests), combined security boundary and all callers of
+  changed signatures, non-security changes (doctor help text, `go.mod`/`go.sum`,
+  `x/sys` promotion, `scripts/test.sh` mode, workspace records), and
+  consistency with ADR-003 / ADR-006 / architecture / engineering standards.
+
+### Verification executed
+
+- `gofmt -l` on changed files — clean. Pre-existing repo-wide drift
+  (`internal/cli/status.go`, `internal/dns/server.go`) unchanged by this branch.
+- `git diff --check` — clean.
+- `go build ./...`, `go vet ./...` — clean.
+- `make test` (runs `./scripts/test.sh`; tracked mode 100755 verified) —
+  **8 passed, 0 skipped**: `go mod verify`, `go mod tidy`, `golangci-lint`
+  v2.15.0 (0 issues), `go vet`, `govulncheck` (0 affecting code; 7
+  required-module vulnerabilities not called), `go test -race -count=1 ./...`
+  (all packages ok), darwin/arm64 cross-build, linux build.
+- Cross-compile: linux/arm64, darwin/amd64, darwin/arm64 — all pass
+  (cross-compilation only; NOT macOS runtime verification).
+- Root-gated tests under `sudo -n` (compiled `-race` daemon test binary,
+  scoped `-test.run`): `TestForeignOwnedLeafRejectedReal` PASS (real `chown`
+  to uid 1000 rejected), `TestRootOwnedSystemAlias` PASS, all other
+  securepath/client tests PASS. `TestClassifyStatPolicy` and
+  `TestUserControlledSymlinksRejected` FAIL under a whole-package uid-0 run —
+  the §1p documented artifact (synthetic-UID policy tests; unsupported test
+  mode), not a defect.
+- Built-binary E2E: `up -d` with symlinked `.logs` → explicit
+  `log directory ... is a symlink (unsafe)` rejection, exit 1, no detached
+  spawn, nothing written through the link; absent leaf → `status` "not
+  running" exit 1, `down` idempotent exit 0, `doctor` socket check
+  pass/warn correctly; `0777` leaf → explicit unsafe-permissions error
+  (not "not running"); `logs` with absent file → friendly message.
+- CI status: no CI runs exist for `c716f03` — `ci.yml` triggers only on
+  push/PR to `main`/`develop`. The `macos-latest` test matrix exists but has
+  not exercised this branch.
+
+### Security conclusion
+
+- Original detached-daemon log symlink/arbitrary-file-write vulnerability:
+  **remediated**. Final directory and file components are descriptor-anchored
+  (`openat`/`O_NOFOLLOW`) and post-open `Fstat`-validated; the same safe-open
+  boundary serves `daemonize()` writes, `lastStartupError()` reads, and
+  `devtether logs` reads; the log is opened before child spawn. No realistic
+  path to the original arbitrary-file-write impact remains within the
+  malicious-repository threat model.
+- Runtime-directory isolation: **acceptable**. Per-UID leaf isolation,
+  validated bases, absent leaf never returned as a connectable candidate
+  (`ErrNoRuntimeDir` → not-running), unsafe-path errors propagate rather than
+  degrade to "not running", client dials resolve the validated path per dial.
+- Combined boundary: consistent real-UID ownership model, compatible error
+  semantics, no divergent validation of the same path, no weakened fail-closed
+  fallback, no stale callers, no unnecessary abstraction.
+
+### Findings
+
+No confirmed defects; no security finding with a credible remaining attack
+path; no blocking verification gaps. Accepted limitations: intermediate
+ancestors above the final log directory may be symlinks (documented boundary);
+log file mode `0644` (pre-existing choice); macOS runtime filesystem behavior
+verified by source review and cross-compilation only. Documentation
+inconsistencies found (stale B8-1 status, Slice-0 sections misattributed as
+the full-branch review, stale HEAD/commit/test counts in the tracker, missing
+diary entry) were corrected in this reconciliation pass.
+
+### Verdict
+
+**ACCEPT WITH CONDITIONS** — all four conditions were documentation-only and
+are resolved alongside this record. Outstanding separately: macOS runtime
+verification (PR-time CI will exercise the `macos-latest` matrix), owner
+local-run verification, owner acceptance, owner-signed squash integration.
+The security finding is NOT marked owner-accepted; beta.8 remains open.
+
 ## §2 Findings log
 
 | ID | Severity | Location | Finding | Status |
 |---|---|---|---|---|
-| B8-1 | Low | `scripts/test.sh` | Committed mode 100644; `make test` cannot exec it. Local runs use `bash scripts/test.sh`; CI unaffected (calls `go test` directly). One-line `chmod +x` fix — tracked in tracker as separate hygiene item. | Open |
+| B8-1 | Low | `scripts/test.sh` | Committed mode 100644; `make test` cannot exec it. Local runs use `bash scripts/test.sh`; CI unaffected (calls `go test` directly). One-line `chmod +x` fix — tracked in tracker as separate hygiene item. | Resolved — tracked mode is now 100755 (commit `73a14d6`); `make test` executes the script directly; independent full-branch audit recorded 8 passed / 0 skipped (see §1q) |
 | B8-2 | Medium | `internal/config/config.go` `validateRoutes` | Case-variant duplicate route domains passed `LoadConfig` but failed daemon startup with `ErrRouteExists` | Fixed and pushed at `20ef459` — normalized-duplicate guard via `netutil.NormalizeHost` + regression tests; see §1c |
 | B8-3 | Low | `internal/router/router_test.go` | Missing direct test for create→remove→recreate→stale-incarnation removal survival | Fixed and pushed at `20ef459` — `TestEngine_StaleIncarnationCannotRemoveReplacement`; see §1c |

@@ -40,7 +40,7 @@ var doctorCmd = &cobra.Command{
 Checks performed:
   - Configuration syntax and parsing
   - Availability of the configured proxy port
-  - Availability of the DNS port (53)
+  - Availability of the configured DNS bind address
   - setcap privileges on the devtether binary (Linux)
   - System DNS resolution for .localhost
   - Stale IPC sockets from previous crashes
@@ -126,9 +126,19 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check 6: Stale socket.
-	socketPath := daemon.SocketPath()
-	if _, statErr := os.Stat(socketPath); statErr != nil {
+	// Check 6: Stale socket. The socket path is only dialed after the runtime
+	// directory has been validated; an unresolvable or unsafe directory is
+	// reported, never probed.
+	socketPath, socketErr := daemon.SocketPath()
+	if socketErr != nil {
+		if errors.Is(socketErr, os.ErrNotExist) {
+			printCheck(true, "Socket", "no stale socket file")
+			passed++
+		} else {
+			printWarn("Socket", fmt.Sprintf("runtime directory unavailable: %v", socketErr))
+			warnings++
+		}
+	} else if _, statErr := os.Stat(socketPath); statErr != nil {
 		printCheck(true, "Socket", "no stale socket file")
 		passed++
 	} else {

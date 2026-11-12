@@ -19,6 +19,11 @@ import (
 func isolateRuntime(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	// XDG_RUNTIME_DIR must be exactly 0700 (see securepath.go); t.TempDir is 0755.
+	//nolint:gosec // G302: test fixture directory, not a file
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatalf("failed to chmod runtime directory: %v", err)
+	}
 	t.Setenv("XDG_RUNTIME_DIR", root)
 	if err := os.MkdirAll(filepath.Join(root, "devtether"), 0700); err != nil {
 		t.Fatalf("failed to create runtime directory: %v", err)
@@ -26,22 +31,58 @@ func isolateRuntime(t *testing.T) string {
 	return root
 }
 
+func mustLockPath(t *testing.T) string {
+	t.Helper()
+	p, err := LockPath()
+	if err != nil {
+		t.Fatalf("LockPath() = %v", err)
+	}
+	return p
+}
+
+func mustPIDPath(t *testing.T) string {
+	t.Helper()
+	p, err := PIDPath()
+	if err != nil {
+		t.Fatalf("PIDPath() = %v", err)
+	}
+	return p
+}
+
+func mustSocketPath(t *testing.T) string {
+	t.Helper()
+	p, err := SocketPath()
+	if err != nil {
+		t.Fatalf("SocketPath() = %v", err)
+	}
+	return p
+}
+
+func mustNoncePath(t *testing.T) string {
+	t.Helper()
+	p, err := noncePath()
+	if err != nil {
+		t.Fatalf("noncePath() = %v", err)
+	}
+	return p
+}
+
 // writeSocket creates a regular file standing in for a bound Unix socket.
 // CleanStaleSocket only cares about filesystem presence, not socket-ness.
 func writeSocket(t *testing.T) {
 	t.Helper()
 	//nolint:gosec // Test stand-in for a socket file
-	if err := os.WriteFile(SocketPath(), nil, 0600); err != nil {
+	if err := os.WriteFile(mustSocketPath(t), nil, 0600); err != nil {
 		t.Fatalf("failed to create socket stand-in: %v", err)
 	}
 }
 
 func TestReadPIDHandlesEmptyFile(t *testing.T) {
 	isolateRuntime(t)
-	if err := os.MkdirAll(filepath.Dir(PIDPath()), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustPIDPath(t)), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(PIDPath(), nil, 0600); err != nil {
+	if err := os.WriteFile(mustPIDPath(t), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if got := ReadPID(); got != 0 {
@@ -65,10 +106,10 @@ func TestReadPIDParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isolateRuntime(t)
-			if err := os.MkdirAll(filepath.Dir(PIDPath()), 0700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(mustPIDPath(t)), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(PIDPath(), []byte(tt.content), 0600); err != nil {
+			if err := os.WriteFile(mustPIDPath(t), []byte(tt.content), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if got := ReadPID(); got != tt.want {
@@ -87,12 +128,12 @@ func TestWritePIDIsAtomicAndCleansTempFile(t *testing.T) {
 	if got := ReadPID(); got != os.Getpid() {
 		t.Errorf("ReadPID() = %d, want %d", got, os.Getpid())
 	}
-	if _, err := os.Stat(PIDPath() + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(mustPIDPath(t) + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("temporary PID file was left behind: %v", err)
 	}
 
 	RemovePID()
-	if _, err := os.Stat(PIDPath()); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(mustPIDPath(t)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("RemovePID() left the PID file behind: %v", err)
 	}
 }
@@ -120,6 +161,10 @@ func TestRuntimeDirCreatesPrivateDirectory(t *testing.T) {
 
 func TestRuntimeDirRejectsSymlinkedDirectory(t *testing.T) {
 	root := t.TempDir()
+	//nolint:gosec // Test fixture: XDG_RUNTIME_DIR must be exactly 0700.
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("XDG_RUNTIME_DIR", root)
 	target := t.TempDir()
 
@@ -141,6 +186,10 @@ func TestRuntimeDirRejectsSymlinkedDirectory(t *testing.T) {
 // still be explicit (ADR-003), not a generic "file exists" from MkdirAll.
 func TestRuntimeDirRejectsDanglingSymlink(t *testing.T) {
 	root := t.TempDir()
+	//nolint:gosec // Test fixture: XDG_RUNTIME_DIR must be exactly 0700.
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("XDG_RUNTIME_DIR", root)
 
 	if err := os.Symlink(filepath.Join(root, "missing-target"), filepath.Join(root, "devtether")); err != nil {
@@ -164,9 +213,9 @@ func TestStatePathsShareRuntimeDir(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "lock", path: LockPath()},
-		{name: "pid", path: PIDPath()},
-		{name: "socket", path: SocketPath()},
+		{name: "lock", path: mustLockPath(t)},
+		{name: "pid", path: mustPIDPath(t)},
+		{name: "socket", path: mustSocketPath(t)},
 	}
 	for _, p := range paths {
 		if filepath.Dir(p.path) != wantDir {
@@ -208,7 +257,7 @@ func TestSecretArtifacts(t *testing.T) {
 		t.Errorf("nonce is not valid hex: %v", hexErr)
 	}
 
-	info, err := os.Stat(noncePath())
+	info, err := os.Stat(mustNoncePath(t))
 	if err != nil {
 		t.Fatalf("failed to stat nonce file: %v", err)
 	}
@@ -232,7 +281,7 @@ func TestSecretArtifacts(t *testing.T) {
 	}
 
 	removeNonce()
-	if _, err := os.Stat(noncePath()); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(mustNoncePath(t)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("removeNonce() left the nonce file behind: %v", err)
 	}
 }
@@ -247,7 +296,7 @@ func TestLockFilePermissions(t *testing.T) {
 	}
 	defer func() { _ = lock.Close() }()
 
-	info, err := os.Stat(LockPath())
+	info, err := os.Stat(mustLockPath(t))
 	if err != nil {
 		t.Fatalf("failed to stat lock file: %v", err)
 	}
@@ -266,7 +315,7 @@ func TestDaemonProbesReportUnreadableLock(t *testing.T) {
 	isolateRuntime(t)
 
 	//nolint:gosec // Test fixture: deliberately unreadable lock file
-	if err := os.WriteFile(LockPath(), nil, 0000); err != nil {
+	if err := os.WriteFile(mustLockPath(t), nil, 0000); err != nil {
 		t.Fatal(err)
 	}
 
@@ -439,7 +488,7 @@ func TestCleanStaleSocket(t *testing.T) {
 				t.Fatalf("case %q expects the socket to survive, so it needs a live PID", tt.name)
 			}
 			isolateRuntime(t)
-			if err := os.MkdirAll(filepath.Dir(PIDPath()), 0700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(mustPIDPath(t)), 0700); err != nil {
 				t.Fatal(err)
 			}
 			if tt.socket {
@@ -447,18 +496,18 @@ func TestCleanStaleSocket(t *testing.T) {
 			}
 			if tt.pid != "" {
 				//nolint:gosec // Test fixture mirrors the 0644 PID file
-				if err := os.WriteFile(PIDPath(), []byte(tt.pid+"\n"), 0644); err != nil {
+				if err := os.WriteFile(mustPIDPath(t), []byte(tt.pid+"\n"), 0644); err != nil {
 					t.Fatal(err)
 				}
 			}
 
 			CleanStaleSocket()
 
-			_, socketErr := os.Lstat(SocketPath())
+			_, socketErr := os.Lstat(mustSocketPath(t))
 			if gotSocket := socketErr == nil; gotSocket != tt.wantSocket {
 				t.Errorf("socket present = %v, want %v", gotSocket, tt.wantSocket)
 			}
-			_, pidErr := os.Lstat(PIDPath())
+			_, pidErr := os.Lstat(mustPIDPath(t))
 			if gotPID := pidErr == nil; gotPID != tt.wantPID {
 				t.Errorf("PID file present = %v, want %v", gotPID, tt.wantPID)
 			}

@@ -25,7 +25,7 @@ Example 2: the user asks to reverse a slice or sort it. Instead of importing `gi
 slices.Reverse(mySlice)
 slices.Sort(mySlice)
 ```
-Relying on the Go 1.27.1 standard library is non-negotiable before reaching for third-party dependencies.
+Relying on the Go 1.27.4 standard library is non-negotiable before reaching for third-party dependencies.
 
 Before writing any code, stop at the first rung that holds:
 

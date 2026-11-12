@@ -641,32 +641,32 @@ func TestLastStartupError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			logFile := filepath.Join(t.TempDir(), "devtether.log")
+			logFile := filepath.Join(safeLogDir(t), "devtether.log")
 			//nolint:gosec // Test-controlled path
 			if err := os.WriteFile(logFile, []byte(tt.content), 0600); err != nil {
 				t.Fatalf("failed to write test log: %v", err)
 			}
-			if got := lastStartupError(logFile); got != tt.want {
+			if got := lastStartupError(filepath.Dir(logFile)); got != tt.want {
 				t.Errorf("lastStartupError() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 
 	t.Run("missing log file yields empty", func(t *testing.T) {
-		if got := lastStartupError(filepath.Join(t.TempDir(), "absent.log")); got != "" {
+		if got := lastStartupError(safeLogDir(t)); got != "" {
 			t.Errorf("lastStartupError() = %q, want empty", got)
 		}
 	})
 
 	t.Run("only the tail of a large log is read", func(t *testing.T) {
-		logFile := filepath.Join(t.TempDir(), "devtether.log")
+		logFile := filepath.Join(safeLogDir(t), "devtether.log")
 		padding := strings.Repeat("x\n", 5000) // > 4096-byte tail window
 		content := padding + "Error: tail crash\n"
 		//nolint:gosec // Test-controlled path
 		if err := os.WriteFile(logFile, []byte(content), 0600); err != nil {
 			t.Fatalf("failed to write test log: %v", err)
 		}
-		if got := lastStartupError(logFile); got != "tail crash" {
+		if got := lastStartupError(filepath.Dir(logFile)); got != "tail crash" {
 			t.Errorf("lastStartupError() = %q, want %q", got, "tail crash")
 		}
 	})

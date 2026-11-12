@@ -6,7 +6,7 @@ DevTether is a self-hosted local development networking toolkit written in Go. I
 
 > [!WARNING]
 > **Project Status: Beta**  
-> v2.0.0-beta.7 currently ships **Engine 1: Local Static Routing**. The remaining engines and sharing features are planned and are not part of the current beta.
+> v2.0.0-beta.7 is the latest released beta and ships **Engine 1: Local Static Routing**. v2.0.0-beta.8 is in active development on `develop`; the remaining engines and sharing features are planned and are not part of either beta.
 
 ## ⚡ Quick Start
 
@@ -52,7 +52,7 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 ### Option 3: Build from Source
 
-Requires Go 1.27.1+.
+Requires Go 1.27.4+.
 
 ```bash
 git clone https://github.com/ivin-titus/devtether.git
@@ -154,7 +154,7 @@ not the same as `OFFLINE`.
 
 ### Proxy port behavior
 
-The proxy tries the configured port first. In beta.7, if that bind fails because of permission or address-in-use conditions, it falls back to `127.0.0.1:8080`. There is no OS-assigned `:0` fallback. Both configured and fallback listeners remain loopback-only.
+The proxy tries the configured port first. If that bind fails because of permission or address-in-use conditions, it falls back to `127.0.0.1:8080`. There is no OS-assigned `:0` fallback. Both configured and fallback listeners remain loopback-only.
 
 ### DNS behavior
 

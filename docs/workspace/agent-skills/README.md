@@ -34,6 +34,16 @@ Covers:
 * test adequacy;
 * workspace/documentation consistency.
 
+### `ponytail`
+
+Use during implementation and audit passes to enforce minimal-diff discipline.
+
+Covers:
+
+* YAGNI / "Lazy Senior Dev" principles;
+* smallest-correct-change mindset;
+* standard library over new dependencies.
+
 ## Canonical project documentation
 
 Start with:

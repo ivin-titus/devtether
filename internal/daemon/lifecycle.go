@@ -30,92 +30,25 @@ import (
 )
 
 // RuntimeDir returns the validated, user-owned directory for daemon state
-// files (lock, PID, socket). It creates the directory if needed and verifies
-// ownership to prevent symlink attacks (ADR-003).
+// files (lock, PID, socket). It securely creates the directory if needed and
+// verifies ownership to prevent symlink attacks (ADR-003). Resolution is
+// delegated to resolveRuntimeDir, which enforces per-UID isolation and rejects
+// unsafe inherited environments (XDG_RUNTIME_DIR/TMPDIR).
 func RuntimeDir() (string, error) {
-	dir := runtimeDirPath()
-
-	// ADR-003: verify a pre-existing runtime directory before any filesystem
-	// mutation, so a symlinked path is refused explicitly even when its link
-	// target does not exist (MkdirAll would otherwise fail with a generic
-	// EEXIST first).
-	if info, lerr := os.Lstat(dir); lerr == nil {
-		if err := validateDirInfo(dir, info); err != nil {
-			return "", err
-		}
-	} else if !errors.Is(lerr, os.ErrNotExist) {
-		return "", fmt.Errorf("daemon: failed to stat runtime directory: %w", lerr)
-	}
-
-	// Create the directory if it does not exist.
-	//nolint:gosec // ADR-003: socket directory uses 0700 (owner-only)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("daemon: failed to create runtime directory %s: %w", dir, err)
-	}
-
-	// ADR-003: Symlink protection — verify the directory is real and owned by us.
-	if err := validateDirOwnership(dir); err != nil {
-		return "", err
-	}
-
-	return dir, nil
-}
-
-// runtimeDirPath returns the raw directory path without validation.
-func runtimeDirPath() string {
-	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		return filepath.Join(xdg, "devtether")
-	}
-	// Secure fallback: per-user isolated directory instead of bare /tmp/devtether.sock.
-	// This prevents fake-daemon hijacking and multi-user conflicts (ADR-003).
-	return filepath.Join(os.TempDir(), fmt.Sprintf("devtether-%d", os.Getuid()))
-}
-
-// validateDirOwnership uses Lstat (no symlink follow) to verify that dir is
-// a real directory owned by the current user. Fails closed on any mismatch.
-func validateDirOwnership(dir string) error {
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("daemon: failed to stat runtime directory: %w", err)
-	}
-	return validateDirInfo(dir, info)
-}
-
-// validateDirInfo applies the ADR-003 ownership rules to a pre-fetched Lstat
-// result of dir.
-func validateDirInfo(dir string, info os.FileInfo) error {
-	// Must be a directory, not a symlink.
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("daemon: runtime directory %s is a symlink (possible attack)", dir)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("daemon: %s exists but is not a directory", dir)
-	}
-
-	// Verify ownership matches the current user.
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("daemon: unable to read directory ownership (unsupported platform)")
-	}
-	//nolint:gosec // G115: Unix UIDs fit in uint32 safely
-	if stat.Uid != uint32(os.Getuid()) {
-		return fmt.Errorf("daemon: runtime directory %s is owned by uid %d, not %d (possible attack)", dir, stat.Uid, os.Getuid())
-	}
-
-	return nil
+	return resolveRuntimeDir(true)
 }
 
 // LockPath returns the path to the daemon lock file.
-func LockPath() string {
-	return filepath.Join(runtimeDirPath(), "devtether.lock")
+func LockPath() (string, error) {
+	return runtimeFilePath("devtether.lock")
 }
 
 // PIDPath returns the path to the daemon PID file.
-func PIDPath() string {
-	return filepath.Join(runtimeDirPath(), "devtether.pid")
+func PIDPath() (string, error) {
+	return runtimeFilePath("devtether.pid")
 }
 
-func noncePath() string { return filepath.Join(runtimeDirPath(), "devtether.nonce") }
+func noncePath() (string, error) { return runtimeFilePath("devtether.nonce") }
 
 func writeNonce() (string, error) {
 	buf := make([]byte, 32)
@@ -123,21 +56,34 @@ func writeNonce() (string, error) {
 		return "", fmt.Errorf("daemon: generate IPC nonce: %w", err)
 	}
 	nonce := hex.EncodeToString(buf)
-	if err := os.WriteFile(noncePath(), []byte(nonce), 0600); err != nil {
+	path, err := noncePath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(nonce), 0600); err != nil {
 		return "", fmt.Errorf("daemon: write IPC nonce: %w", err)
 	}
 	return nonce, nil
 }
 
 func readNonce() (string, error) {
-	data, err := os.ReadFile(noncePath())
+	path, err := noncePath()
+	if err != nil {
+		return "", err
+	}
+	//nolint:gosec // G304: path is derived from the validated runtime directory
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
 }
 
-func removeNonce() { _ = os.Remove(noncePath()) }
+func removeNonce() {
+	if path, err := noncePath(); err == nil {
+		_ = os.Remove(path)
+	}
+}
 
 // AcquireLock attempts to acquire an exclusive, non-blocking flock on the
 // lock file. On success, the returned file must be kept open for the daemon's
@@ -146,7 +92,10 @@ func removeNonce() { _ = os.Remove(noncePath()) }
 //
 // Returns os.ErrExist if another instance holds the lock.
 func AcquireLock() (*os.File, error) {
-	lockPath := LockPath()
+	lockPath, err := LockPath()
+	if err != nil {
+		return nil, err
+	}
 
 	//nolint:gosec // Lock file path is derived from validated runtime directory
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
@@ -172,7 +121,10 @@ func AcquireLock() (*os.File, error) {
 // it exists for diagnostics and as a SIGTERM fallback, not for instance
 // ownership.
 func WritePID() error {
-	pidPath := PIDPath()
+	pidPath, err := PIDPath()
+	if err != nil {
+		return err
+	}
 	tmpPath := pidPath + ".tmp"
 
 	pid := os.Getpid()
@@ -210,13 +162,20 @@ func WritePID() error {
 
 // RemovePID removes the PID file. Called during graceful shutdown.
 func RemovePID() {
-	_ = os.Remove(PIDPath())
+	if path, err := PIDPath(); err == nil {
+		_ = os.Remove(path)
+	}
 }
 
 // ReadPID reads the PID from the PID file. Returns 0 if the file does not
-// exist or cannot be parsed.
+// exist, cannot be parsed, or the runtime directory cannot be resolved.
 func ReadPID() int {
-	data, err := os.ReadFile(PIDPath())
+	path, err := PIDPath()
+	if err != nil {
+		return 0
+	}
+	//nolint:gosec // G304: path is derived from the validated runtime directory
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}
@@ -246,20 +205,45 @@ func CleanStaleSocket() {
 	if PIDAlive(ReadPID()) {
 		return
 	}
-	if _, err := os.Lstat(SocketPath()); err == nil {
-		_ = os.Remove(SocketPath())
+	socketPath, err := SocketPath()
+	if err != nil {
+		// No validated runtime directory means there is nothing to clean.
+		return
+	}
+	if _, err := os.Lstat(socketPath); err == nil {
+		_ = os.Remove(socketPath)
 	}
 	RemovePID()
 }
 
-// RootDaemonMayBeRunning reports whether a root-owned fallback runtime
-// directory prevents this user from inspecting the root IPC socket.
+// RootDaemonMayBeRunning reports whether a root-owned daemon socket may be
+// present in a location this user cannot inspect. It is a best-effort
+// diagnostic heuristic, NOT a security check: it never connects to a socket
+// and only Lstats candidate paths. It may miss a root daemon that uses a
+// custom XDG_RUNTIME_DIR; the authoritative signal remains the IPC permission
+// error from an actual connect attempt.
 func RootDaemonMayBeRunning() bool {
 	if os.Getuid() == 0 {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(os.TempDir(), "devtether-0", "devtether.sock"))
-	return errors.Is(err, os.ErrPermission)
+	candidates := []string{
+		"/run/user/0/devtether/devtether.sock",
+		filepath.Join(os.TempDir(), "devtether-0", "devtether.sock"),
+		filepath.Join("/tmp", "devtether-0", "devtether.sock"),
+	}
+	for _, p := range candidates {
+		info, err := os.Lstat(p)
+		if err == nil {
+			if info.Mode()&os.ModeSocket != 0 {
+				return true
+			}
+			continue
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrNoDaemon reports that no daemon lock file exists for this user, so no
@@ -276,7 +260,13 @@ var ErrLockUnreadable = errors.New("daemon: lock file is not readable")
 // daemon does, and a distinguishable error when the lock file cannot be
 // inspected at all (e.g. another user's daemon).
 func DaemonRunning() (bool, error) {
-	lockPath := LockPath()
+	lockPath, err := LockPath()
+	if err != nil {
+		if errors.Is(err, ErrNoRuntimeDir) {
+			return false, nil
+		}
+		return false, err
+	}
 
 	//nolint:gosec // Lock file path is derived from the validated runtime directory
 	f, err := os.Open(lockPath)
@@ -316,7 +306,13 @@ const flockPollInterval = 500 * time.Millisecond
 // ErrLockUnreadable when the lock file cannot be opened, or ctx.Err() if the
 // context is cancelled.
 func WaitForExit(ctx context.Context) error {
-	lockPath := LockPath()
+	lockPath, err := LockPath()
+	if err != nil {
+		if errors.Is(err, ErrNoRuntimeDir) {
+			return ErrNoDaemon
+		}
+		return err
+	}
 
 	//nolint:gosec // Lock file path is derived from validated runtime directory
 	f, err := os.Open(lockPath)

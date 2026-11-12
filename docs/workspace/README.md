@@ -20,6 +20,8 @@ When an historical workspace record conflicts with the current source tree, curr
 - **Previous release:** `v2.0.0-beta.7` — recorded in [CHANGELOG.md](../../CHANGELOG.md) and its [workspace](v2.0.0-beta.7/tracker.md); older release workspaces may not be retained in this branch.
 - **Next release:** TBD.
 
+**Acceptance convention:** work merged into `develop` is verified by the owner's local run and GPG-signed squash merge; unmerged branches remain pending that gate.
+
 ## 3. AI accountability
 
 AI-assisted contributions remain subject to the human accountability policy in
@@ -31,15 +33,22 @@ AI-assisted contributions remain subject to the human accountability policy in
 
 ## 4. Workspace anatomy
 
-Active release folders contain a tracker and supporting artifacts:
+Start at [§2](#2-active-release-pointers) for the active release, then its
+`tracker.md`. Each release folder (`v2.0.0-<name>/`) contains:
 
-- `tracker.md` — current execution state.
-- `artifacts/implementation_plan.md` — planned execution steps.
-- `artifacts/discussion_space.md` — design discussion and decisions.
-- `artifacts/audit_report.md` — audit findings and verification history.
-- `artifacts/agent_diary.md` — raw agent scratchpad/history.
+- `tracker.md` — current execution state for that release.
+- `artifacts/implementation_plan.md` — planned execution steps and design detail.
+- `artifacts/discussion_space.md` — design discussion and recorded decisions.
+- `artifacts/audit_report.md` — audit findings, pre-mortems and verification evidence.
+- `artifacts/agent_diary.md` — raw agent working history (append-only scratchpad).
 
-Deferred ideas live under `docs/workspace/.ideas/`.
+Cross-release and standing documents:
+
+- `agent-skills/` — project-specific Agent Skills (workflows for implementation, audit, and review discipline).
+- `.ideas/` — deferred feature proposals and parked designs; not committed release scope.
+- `portfolio-documentation-sync-audit.md` — beta.7-era documentation consistency audit. Historical: later releases may supersede its conclusions (see §5).
+
+Release history itself lives in [CHANGELOG.md](../../CHANGELOG.md), not in this workspace.
 
 ## 5. Historical-record rule
 
